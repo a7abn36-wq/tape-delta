@@ -6,7 +6,8 @@ import { LiqMap } from './liq.js';
 import { SYMBOLS } from './data.js';
 import { isAr } from './i18n.js';
 
-const SRC = { key: 'spot', label: 'Binance Spot', rest: 'https://data-api.binance.vision/api/v3', ws: ['wss://data-stream.binance.vision/stream', 'wss://stream.binance.com:443/stream', 'wss://stream.binance.com:9443/stream'] };
+const SRC_OKX = { key: 'okx', kind: 'okx', label: 'OKX Spot', rest: 'https://www.okx.com/api/v5/market' };
+const SRC_BN = { key: 'spot', label: 'Binance Spot', rest: 'https://data-api.binance.vision/api/v3', ws: ['wss://data-stream.binance.vision/stream', 'wss://stream.binance.com:443/stream', 'wss://stream.binance.com:9443/stream'] };
 const $ = s => document.querySelector(s);
 const fmt = (v, d = 2) => v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 0 }) : v.toLocaleString('en-US', { maximumFractionDigits: d });
 const clock = t => new Date(t).toLocaleTimeString([], { hour12: false });
@@ -18,7 +19,7 @@ const T = {
   rec: ['recording since', 'بيسجل من'], cover: ['depth band', 'نطاق العمق'],
   wsMode: ['WS', 'WS'], restMode: ['REST 2s (WS unavailable)', 'REST كل 2 ثانية (الـWS مش شغال)'], conn: ['connecting…', 'بيتصل…'],
   keyBid: ['resting BUY orders', 'أوامر شراء واقفة'], keyAsk: ['resting SELL orders', 'أوامر بيع واقفة'], keyBuy: ['market buy trade', 'صفقة شراء بالسوق'], keySell: ['market sell trade', 'صفقة بيع بالسوق'], keyLine: ['mid price', 'سعر المنتصف'], keyInt: ['darker = bigger size', 'أغمق = حجم أكبر'],
-  real: ['REAL: Binance Spot book, this exchange only', 'حقيقي: دفتر Binance Spot، البورصة دي بس'], partial: ['PARTIAL: only a band around price', 'جزئي: نطاق حوالين السعر بس'], tradesReal: ['REAL: actual trades', 'حقيقي: صفقات فعلية'],
+  real: ['REAL: book of this one exchange only', 'حقيقي: دفتر البورصة دي بس'], partial: ['PARTIAL: only a band around price', 'جزئي: نطاق حوالين السعر بس'], tradesReal: ['REAL: actual trades', 'حقيقي: صفقات فعلية'],
   empty: ['Recording just started. The map fills in every 2 seconds. There is no history before you opened this page.', 'التسجيل لسه بادي. الخريطة بتتملي كل ثانيتين. مفيش تاريخ قبل ما فتحت الصفحة.'],
   keyEv: ['events P/C/A/X (inference)', 'أحداث P/C/A/X (استنتاج)'],
   keyLv: ['VWAP / POC / VAH / VAL (derived)', 'VWAP / POC / VAH / VAL (مشتقة)'],
@@ -26,6 +27,7 @@ const T = {
   tapHint: ['Tap the map, a bubble or a key item for an explanation.', 'اضغط على الخريطة أو فقاعة أو عنصر في المفتاح للشرح.']
 };
 
+const SRC = SRC_BN;
 export class Bookmap {
   constructor(app) {
     this.app = app; this.wm = 15; this.rp = 0.0025; this.sym = null; this.open_ = false; this.lm = null; this.trades = []; this.cvd = []; this.cum = 0; this.dirty = true; this.lastDraw = 0;
@@ -36,6 +38,7 @@ export class Bookmap {
     const el = $('#bm'); this.el = el; this.cv = $('#bmCv'); this.g = this.cv.getContext('2d');
     $('#bmX').onclick = () => this.close();
     $('#bmSym').onchange = e => this.start(e.target.value);
+    this.srcKey = 'bn'; $('#bmSrc').onchange = e => { this.srcKey = e.target.value; this.start(this.sym || $('#bmSym').value); this._labels(); };
     el.querySelectorAll('[data-wm]').forEach(b => b.onclick = () => { this.wm = +b.dataset.wm; this._ctl(); this.dirty = true; this.draw(); });
     el.querySelectorAll('[data-rp]').forEach(b => b.onclick = () => { this.rp = +b.dataset.rp; this._ctl(); this.dirty = true; this.draw(); });
     el.querySelectorAll('[data-key]').forEach(b => b.onclick = () => this.explain(b.dataset.key));
@@ -49,7 +52,7 @@ export class Bookmap {
     const ar = isAr(); $('#bmT').textContent = this.L('title'); $('#bmX').textContent = this.L('close');
     $('#bmKey').innerHTML = `<button class="bmk" data-key="bid"><i style="background:#26e6a0"></i>${this.L('keyBid')}</button><button class="bmk" data-key="ask"><i style="background:#ff5a44"></i>${this.L('keyAsk')}</button><button class="bmk" data-key="buy"><i class="ring" style="border-color:#26e6a0"></i>${this.L('keyBuy')}</button><button class="bmk" data-key="sell"><i class="ring" style="border-color:#ff5a44"></i>${this.L('keySell')}</button><button class="bmk" data-key="line"><i style="background:#e8f1ff;height:2px"></i>${this.L('keyLine')}</button><button class="bmk" data-key="int"><i class="grad"></i>${this.L('keyInt')}</button><button class="bmk" data-key="ev"><i style="background:#f2c14e"></i>${this.L('keyEv')}</button><button class="bmk" data-key="lv"><i style=\"background:#ff9ff3\"></i>${this.L('keyLv')}</button>`;
     $('#bmKey').querySelectorAll('[data-key]').forEach(b => b.onclick = () => this.explain(b.dataset.key));
-    $('#bmLbl').innerHTML = `<span class="bmc ok">${this.L('real')}</span><span class="bmc part">${this.L('partial')}</span><span class="bmc ok">${this.L('tradesReal')}</span>`;
+    $('#bmLbl').innerHTML = `<span class="bmc ok">${(this.src || SRC_BN).label}: ${this.L('real')}</span><span class="bmc part">${this.L('partial')}</span><span class="bmc ok">${this.L('tradesReal')}</span>`;
     $('#bmHint').textContent = this.L('tapHint'); this.el.dir = ar ? 'rtl' : 'ltr';
   }
   cryptoList() { return SYMBOLS.filter(s => s.kinds && s.kinds.includes('spot')); }
@@ -62,8 +65,8 @@ export class Bookmap {
   close() { this.open_ = false; this.el.hidden = true; this.stop(); }
   stop() { clearInterval(this._tm); if (this.lm) { this.lm.stop(); this.lm = null; } this._stopTrades(); this.sym = null; }
   start(sym) {
-    this.stop(); this.sym = sym; this.trades = []; this.cvd = []; this.cum = 0; this.t0 = Date.now(); this.dirty = true; this.lastAgg = 0;
-    const lm = new LiqMap(() => { this.dirty = true; }); lm.lim = 1000; lm.wsIdx = 0; lm.closes = 0; this.lm = lm; this.fellBack = false; lm.start(SRC, sym); this._startTrades(sym); this.loop();
+    this.stop(); this.sym = sym; const okx = this.srcKey === 'okx'; this.src = okx ? SRC_OKX : SRC_BN; this.isym = okx ? sym.replace(/USDT$/, '') + '-USDT' : sym; this.tsym = (okx ? 'OKX:' : '') + sym; this.trades = []; this.cvd = []; this.cum = 0; this.t0 = Date.now(); this.dirty = true; this.lastAgg = 0;
+    const lm = new LiqMap(() => { this.dirty = true; }); lm.lim = 1000; lm.wsIdx = 0; lm.closes = 0; this.lm = lm; this.fellBack = false; if (okx) { this.fellBack = true; lm.startRest(this.src, this.isym, 400); this.tmode = 'ws'; this._tradesRest(); } else { lm.start(SRC, sym); this._startTrades(sym); } this.loop();
   }
   loop() {
     clearInterval(this._tm);
@@ -87,7 +90,7 @@ export class Bookmap {
   }
   _tradesRest() {
     if (this.tmode === 'rest') return; this.tmode = 'rest'; try { this.ws2 && this.ws2.close(); } catch { } const g = this.tgen, sym = this.sym;
-    const tick = async () => { if (g !== this.tgen || this.tmode !== 'rest') return; try { const r = await fetch(`${SRC.rest}/aggTrades?symbol=${sym}&limit=500`); if (!r.ok) return; const d = await r.json(); if (g !== this.tgen) return; for (const x of d) this._addTrade(x.a, +x.p, +x.q, x.T, x.m); } catch { } };
+    const tick = async () => { if (g !== this.tgen || this.tmode !== 'rest') return; try { if (this.src.kind === 'okx') { const r = await fetch(`${this.src.rest}/trades?instId=${this.isym}&limit=100`); if (!r.ok) return; const d = (await r.json()).data || []; if (g !== this.tgen) return; for (const x of d.slice().reverse()) this._addTrade(+x.tradeId, +x.px, +x.sz, +x.ts, x.side === 'sell'); return; } const r = await fetch(`${SRC.rest}/aggTrades?symbol=${sym}&limit=500`); if (!r.ok) return; const d = await r.json(); if (g !== this.tgen) return; for (const x of d) this._addTrade(x.a, +x.p, +x.q, x.T, x.m); } catch { } };
     tick(); this._tt = setInterval(() => { if (g !== this.tgen || this.tmode !== 'rest') { clearInterval(this._tt); return; } tick(); }, 2000);
   }
   _stopTrades() { this.tgen = (this.tgen || 0) + 1; clearInterval(this._tt); try { this.ws2 && this.ws2.close(); } catch { } this.ws2 = null; }
@@ -122,10 +125,10 @@ export class Bookmap {
   _ssave() { const S = this._S; if (!S) return; S.ev = S.ev.slice(-1000); S.base = S.base.slice(-3000); try { localStorage.setItem('bm_stats_v1', JSON.stringify(S)); } catch { } }
   _track() {
     const lm = this.lm; if (!lm || !lm.snaps.length) return; const S = this._sload(), now = Date.now(), last = lm.snaps[lm.snaps.length - 1]; if (now - last.t > 8000) return; let ch = false;
-    if (now - (this._lb || 0) >= 30000) { this._lb = now; S.base.push({ sym: this.sym, t: now, m0: last.mid, r2: null, r5: null }); ch = true; }
-    for (const e of this._events()) { if (!['A', 'X', 'P'].includes(e.cls)) continue; const k = this.sym + e.t + e.side + Math.round(e.p); if (S.ev.some(x => x.k === k)) continue; const up = (e.cls === 'A' && e.side === 'b') || (e.cls === 'X' && e.side === 'a') || (e.cls === 'P' && e.side === 'a'); S.ev.push({ k, cls: e.cls, sym: this.sym, t: now, dir: up ? 1 : -1, m0: last.mid, r2: null, r5: null }); ch = true; }
-    const dv = this._div(); if (dv && now - (this._ld || 0) > 300000) { this._ld = now; S.ev.push({ k: 'D' + now, cls: 'DIV', sym: this.sym, t: now, dir: dv.dir === 'bull' ? 1 : -1, m0: last.mid, r2: null, r5: null }); ch = true; }
-    const res = r => { for (const [f, h] of [['r2', 120e3 * (this._hs || 1)], ['r5', 300e3 * (this._hs || 1)]]) { if (r[f] !== null) continue; if (now < r.t + h) continue; let v = 'x'; if (r.sym === this.sym) { let b = null, bd = 1e12; for (const q of lm.snaps) { const d = Math.abs(q.t - (r.t + h)); if (d < bd) { bd = d; b = q; } } if (b && bd <= 15000) v = (b.mid - r.m0) / r.m0 * 100; } r[f] = v; ch = true; } };
+    if (now - (this._lb || 0) >= 30000) { this._lb = now; S.base.push({ sym: this.tsym, t: now, m0: last.mid, r2: null, r5: null }); ch = true; }
+    for (const e of this._events()) { if (!['A', 'X', 'P'].includes(e.cls)) continue; const k = this.tsym + e.t + e.side + Math.round(e.p); if (S.ev.some(x => x.k === k)) continue; const up = (e.cls === 'A' && e.side === 'b') || (e.cls === 'X' && e.side === 'a') || (e.cls === 'P' && e.side === 'a'); S.ev.push({ k, cls: e.cls, sym: this.tsym, t: now, dir: up ? 1 : -1, m0: last.mid, r2: null, r5: null }); ch = true; }
+    const dv = this._div(); if (dv && now - (this._ld || 0) > 300000) { this._ld = now; S.ev.push({ k: 'D' + now, cls: 'DIV', sym: this.tsym, t: now, dir: dv.dir === 'bull' ? 1 : -1, m0: last.mid, r2: null, r5: null }); ch = true; }
+    const res = r => { for (const [f, h] of [['r2', 120e3 * (this._hs || 1)], ['r5', 300e3 * (this._hs || 1)]]) { if (r[f] !== null) continue; if (now < r.t + h) continue; let v = 'x'; if (r.sym === this.tsym) { let b = null, bd = 1e12; for (const q of lm.snaps) { const d = Math.abs(q.t - (r.t + h)); if (d < bd) { bd = d; b = q; } } if (b && bd <= 15000) v = (b.mid - r.m0) / r.m0 * 100; } r[f] = v; ch = true; } };
     S.ev.forEach(res); S.base.forEach(res); if (ch) this._ssave();
   }
   _wilson(k, n) { if (!n) return [0, 1]; const z = 1.96, p = k / n, d = 1 + z * z / n, c = p + z * z / (2 * n), a = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return [(c - a) / d, (c + a) / d]; }
@@ -181,7 +184,7 @@ export class Bookmap {
   }
   _chips() {
     const lm = this.lm; if (!lm) return; const ar = isAr(); let mode;
-    if (lm.mode === 'rest') mode = this.L('restMode'); else if (lm.status === 'live') mode = `WS · ${(lm.host || '').replace('wss://', '').split('/')[0]}`; else mode = this.L('conn');
+    if (this.srcKey === 'okx') mode = ar ? 'OKX · REST كل 2 ثانية' : 'OKX · REST every 2 s'; else if (lm.mode === 'rest') mode = this.L('restMode'); else if (lm.status === 'live') mode = `WS · ${(lm.host || '').replace('wss://', '').split('/')[0]}`; else mode = this.L('conn');
     const tm = this.tmode === 'rest' ? (ar ? 'صفقات REST' : 'trades REST') : (this.tws ? (ar ? 'صفقات WS' : 'trades WS') : (ar ? 'صفقات: بانتظار' : 'trades: waiting'));
     const cov = lm.cover ? `±${Math.max(lm.cover.loPct, lm.cover.hiPct).toFixed(2)}%` : '-';
     $('#bmChips').innerHTML = `<span class="bmc ${lm.status === 'live' ? 'ok' : 'part'}">${esc(mode)}</span><span class="bmc">${esc(tm)}</span><span class="bmc">${this.L('rec')} ${lm.since ? clock(lm.since) : '-'}</span><span class="bmc">${this.L('cover')} ${cov}</span>`;
