@@ -5,6 +5,7 @@ import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
 import { analyze } from './analyst.js';
+import { loadProfileCandles, computeProfile } from './vp.js';
 import { init as i18nInit, apply as i18nApply, setLang, helpHTML, settingsHTML, isAr } from './i18n.js';
 import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChange, corr } from './gold.js';
 import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
@@ -14,7 +15,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = {
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, vp: false },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -35,7 +36,7 @@ class App {
     this.liq = new LiqMap(() => { this.chart.invalidate(); this.renderLiq(); }); this.chart = new Chart($('#cv'), this);
     this.feed = new Feed({ status: s => this.setFeedStatus(s), kline: k => this.onKline(k), trade: t => this.onTrade(t) });
     this.buildUI(); this.applyTheme(); i18nInit(); this.load();
-    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => this.renderAI(), 4000); setInterval(() => { this.renderFeed(); if (this.state.countdown !== false && this.candles.length) this.chart.invalidate(); }, 1000);
+    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => this.renderAI(), 4000); setInterval(() => this.loadVP(), 20000); setInterval(() => { this.renderFeed(); if (this.state.countdown !== false && this.candles.length) this.chart.invalidate(); }, 1000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
@@ -102,7 +103,7 @@ class App {
     this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
     this.feed.open(src, symbol, tf);
     if (this.state.ind.liq) this.liq.start(src, symbol);
-    this.loadLevels(gen); this.loadGold(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
+    this.vp = null; this.vpKey = null; this.loadVP(true); this.loadLevels(gen); this.loadGold(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
   }
   showError(symbol, e) {
     const alt = SYMBOLS.find(s => s.kinds.includes('spot'));
@@ -314,6 +315,11 @@ class App {
     const el = $('#chip'); if (!el) return; const k = this.conf; if (!k) { el.innerHTML = '<span class="muted">ICT confluence: waiting for data or ICT layers off</span>'; return; }
     el.className = k.label === 'NO EDGE' ? 'flat' : k.dir === 'bull' ? 'long' : 'short';
     el.innerHTML = `<b>${k.label}</b> <i>${k.score}</i> <span>${esc(k.why)}</span>`;
+  }
+  async loadVP(force) {
+    if (!this.state.ind.vp || !this.src || this.replay) { this.vp = null; return; } const mode = this.state.vpMode || 'day', key = this.state.symbol + '|' + mode; const now = Date.now();
+    if (!force && this.vpKey === key && now - (this.vpAt || 0) < 60000) return; if (this.vpBusy) return; this.vpBusy = true; const gen = this.gen;
+    try { const c = await loadProfileCandles(this.src, this.state.symbol, mode); if (gen !== this.gen) return; const p = computeProfile(c); this.vp = p ? { ...p, mode, label: (mode === 'day' ? 'Day (UTC)' : mode === 'week' ? 'Week (from Mon UTC, 5m)' : 'Session') } : null; this.vpKey = key; this.vpAt = Date.now(); this.chart.invalidate(); } catch { } finally { this.vpBusy = false; }
   }
   renderAI() {
     const el = $('#pane-ai'); if (!el || el.hidden) return; const ar = isAr(); const r = analyze(this, ar); const esc2 = s => String(s).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
@@ -549,7 +555,7 @@ class App {
     const intraday = TFS[s.tf] <= 3600e3; const n = k => s.ind.ict && cnt[k] !== undefined ? (cnt[k] ? cnt[k] + ' in range' : 'none in range') : '';
     $('#sheetT').textContent = 'Indicators'; $('#sheetB').innerHTML =
       `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'scvd', 'Session CVD (resets Asia / London / NY)', intraday ? '' : 'needs 1h or lower', !intraday)}${chk('ind', 'cvd', 'CVD (from first loaded bar)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
-      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
+      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'vp', 'Volume profile: POC / VAH / VAL (approximate, from 1m candles)')}<div class="row"><select id="vpMode"><option value="session">Profile: current session</option><option value="day">Profile: day (UTC)</option><option value="week">Profile: week (from Monday UTC)</option></select></div>${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
@@ -559,7 +565,8 @@ class App {
       <label class="chk"><input type="checkbox" id="zoneAl" ${s.zoneAlerts ? 'checked' : ''}> Zone alerts (only for layers shown)</label>
       <div class="row"><button class="btn" id="icReset">Reset ICT layers</button></div>`;
     $('#sheet').hidden = false;
-    $('#sheetB').querySelectorAll('input[data-g]').forEach(i => i.onchange = () => { s[i.dataset.g][i.dataset.k] = i.checked; this.save(); this.recomputeICT(true); this.chart.cache = {}; this.chart.invalidate(); if (i.dataset.k === 'ict') this.openIndicators(true); if (i.dataset.k === 'liq') { if (i.checked && this.src) this.liq.start(this.src, s.symbol); else this.liq.stop(); this.renderLiq(); } });
+    { const vm = $('#vpMode'); if (vm) { vm.value = this.state.vpMode || 'day'; vm.onchange = () => { this.state.vpMode = vm.value; this.save(); this.loadVP(true); }; } }
+    $('#sheetB').querySelectorAll('input[data-g]').forEach(i => i.onchange = () => { s[i.dataset.g][i.dataset.k] = i.checked; this.save(); this.recomputeICT(true); this.chart.cache = {}; this.chart.invalidate(); if (i.dataset.k === 'vp') this.loadVP(true); if (i.dataset.k === 'ict') this.openIndicators(true); if (i.dataset.k === 'liq') { if (i.checked && this.src) this.liq.start(this.src, s.symbol); else this.liq.stop(); this.renderLiq(); } });
     $('#sheetB').querySelectorAll('[data-avrm]').forEach(b => b.onclick = () => { s.avwaps[s.symbol] = (s.avwaps[s.symbol] || []).filter(a => a.id !== b.dataset.avrm); this.save(); this.chart.invalidate(); this.openIndicators(true); });
     $('#zoneAl').onchange = e => { s.zoneAlerts = e.target.checked; this.save(); };
     $('#icReset').onclick = () => { s.ict = clone(DEF.ict); s.ind.ict = true; this.save(); this.recomputeICT(true); this.chart.invalidate(); this.openIndicators(true); };
