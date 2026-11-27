@@ -17,7 +17,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, vp: false, flowsig: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -191,8 +191,8 @@ class App {
   async pollGoldPx() { if (!this.isGold() || !this.src || !this.gold || this.gold.err) return; try { const e = await fetchPrice(this.src, 'EURUSDT'); this.goldPx = { e }; this.renderGold(); } catch {} }
   goldLevels() {
     const G = this.gold; if (!this.isGold() || !this.state.ind.gold || !G || G.err || !G.atr) return null; const o = G.today.o, a = G.atr; const lv = [];
-    for (const k of [-1, -0.5, 0.5, 1]) lv.push({ name: `ATR ${k > 0 ? '+' : ''}${k}`, p: o + k * a });
-    return { levels: lv, times: this.tfMs() <= 3600e3 ? goldTimes(Date.now()) : [] };
+    if (this.state.ind.goldAtr) for (const k of [-1, -0.5, 0.5, 1]) lv.push({ name: `ATR ${k > 0 ? '+' : ''}${k}`, p: o + k * a });
+    return { levels: lv, times: this.state.ind.goldTimes && this.tfMs() <= 3600e3 ? goldTimes(Date.now()) : [] };
   }
   renderGold() {
     const el = $('#pane-gold'); if (!el || el.hidden) return; const G = this.gold; const tag = (t, x) => `<span class="tag ${t}">${t}</span> ${x}`;
@@ -638,6 +638,7 @@ class App {
       `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'scvd', 'Session CVD (resets Asia / London / NY)', intraday ? '' : 'needs 1h or lower', !intraday)}${chk('ind', 'cvd', 'CVD (from first loaded bar)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
       <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'flowsig', 'Order-flow signals: ABS absorption, EXH exhaustion, RUN stop run')}${chk('ind', 'vp', 'Volume profile: POC / VAH / VAL (approximate, from 1m candles)')}<div class="row"><select id="vpMode"><option value="session">Profile: current session</option><option value="day">Profile: day (UTC)</option><option value="week">Profile: week (from Monday UTC)</option></select></div>${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
+      <div class="grp">Gold lines (XAUUSDT / PAXGUSDT)</div>${chk('ind', 'goldAtr', 'Daily ATR lines (ATR +0.5 / +1 / -0.5 / -1)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}${chk('ind', 'goldTimes', 'Session / news time lines (COMEX settle, London open, LBMA fix)', this.isGold() ? (intraday ? '' : 'needs 1h or lower') : 'gold symbols only', !this.isGold() || !intraday)}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
       <div class="note">Each layer below works on its own. The master switch hides all of them, and the boxes stay ticked.</div>
