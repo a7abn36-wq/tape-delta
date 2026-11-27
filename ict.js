@@ -116,7 +116,7 @@ export function computeICT(c, tfMs, levels) {
   // session levels from higher timeframe candles
   if (levels) {
     const add = (name, p) => { if (p != null && isFinite(p)) out.levels.push({ name, p }); };
-    add('PDH', levels.pdh); add('PDL', levels.pdl); add('D.OPEN', levels.dOpen); add('W.OPEN', levels.wOpen);
+    add('PDH', levels.pdh); add('PDL', levels.pdl); add('D.OPEN', levels.dOpen); add('W.OPEN', levels.wOpen); { const lp = c[n - 1].c, nr = p => p != null && Math.abs(p - lp) / lp < 0.06; /* far weekly/monthly levels stay in the MTF tab, not on the chart */ if (nr(levels.pwh)) add('PWH', levels.pwh); if (nr(levels.pwl)) add('PWL', levels.pwl); if (nr(levels.mOpen)) add('M.OPEN', levels.mOpen); if (nr(levels.pmh)) add('PMH', levels.pmh); if (nr(levels.pml)) add('PML', levels.pml); }
   }
   // premium / discount + OTE from latest confirmed swing pair
   const hs = [...sw].reverse().find(s => s.type === 'H'), ls = [...sw].reverse().find(s => s.type === 'L');

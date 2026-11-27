@@ -1,5 +1,5 @@
 import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, fetchAggFrom, DIAG_TESTS, Feed } from './data.js';
-import { computeICT, wilderATR } from './ict.js';
+import { computeICT, wilderATR, ema, nyHour } from './ict.js';
 import { sessionCVD, avwap, idxAtOrAfter, sessionOf } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
@@ -115,9 +115,9 @@ class App {
   }
   async loadLevels(gen) {
     try {
-      const d = await fetchKlines(this.src, this.state.symbol, '1d', 3), w = await fetchKlines(this.src, this.state.symbol, '1w', 1);
+      const d = await fetchKlines(this.src, this.state.symbol, '1d', 3), w = await fetchKlines(this.src, this.state.symbol, '1w', 2); let mo = []; try { mo = await fetchKlines(this.src, this.state.symbol, '1M', 2); } catch {}
       if (gen !== this.gen) return; const today = d[d.length - 1], prev = d[d.length - 2];
-      this.levels = { pdh: prev?.h, pdl: prev?.l, dOpen: today?.o, wOpen: w[w.length - 1]?.o }; this.recomputeICT(true); this.chart.invalidate();
+      this.levels = { pdh: prev?.h, pdl: prev?.l, dOpen: today?.o, wOpen: w[w.length - 1]?.o, pwh: w.length > 1 ? w[w.length - 2].h : null, pwl: w.length > 1 ? w[w.length - 2].l : null, mOpen: mo.length ? mo[mo.length - 1].o : null, pmh: mo.length > 1 ? mo[mo.length - 2].h : null, pml: mo.length > 1 ? mo[mo.length - 2].l : null }; this.recomputeICT(true); this.chart.invalidate();
     } catch { this.levels = null; }
   }
   async backfillTrades(gen) {
@@ -345,6 +345,32 @@ class App {
       c = c.slice(-B.len); this.btMsg = ar ? 'جاري الحساب...' : 'Computing...'; this.renderBT(); await new Promise(r => setTimeout(r, 30));
       const r = backtest(c, { rr: B.rr, kzOnly: B.kz }); this.btRes = { ...r, sym, tf, st: btStats(r.trades), cn: c.length, B: { ...B }, src: this.src.label }; this.btMsg = '';
     } catch (e) { this.btMsg = (ar ? 'فشل: ' : 'Failed: ') + e.message; } finally { this.btBusy = false; this.renderBT(); }
+  }
+  async runMTF() {
+    if (this.mtfBusy || !this.src) return; this.mtfBusy = true; this.renderMTF(); const sym = this.state.symbol;
+    try {
+      const tfs = ['15m', '1h', '4h', '1d'], rows = [];
+      const ks = await Promise.all(tfs.map(tf => fetchKlines(this.src, sym, tf, 300).catch(() => null)));
+      tfs.forEach((tf, i) => { const c = ks[i]; if (!c || c.length < 60) { rows.push({ tf, na: 1 }); return; } const ict = computeICT(c, TFS[tf]); const st = ict.struct[ict.struct.length - 1]; const e50 = ema(c, 50)[c.length - 1], px = c[c.length - 1].c; const pos = ict.pd ? (px - ict.pd.lo) / (ict.pd.hi - ict.pd.lo) : null; rows.push({ tf, st, ema: px > e50 ? 'bull' : 'bear', pos, px, ago: st ? c.length - 1 - st.i2 : null }); });
+      const m15 = await fetchKlines(this.src, sym, '15m', 400).catch(() => null); let po3 = null;
+      if (m15 && m15.length > 100) { let e = m15.length - 1; while (e >= 0 && !(nyHour(m15[e].t) >= 20)) e--; if (e >= 0) { let s = e; while (s > 0 && nyHour(m15[s - 1].t) >= 20) s--; const as = m15.slice(s, e + 1), af = m15.slice(e + 1); if (as.length >= 8 && af.length) { const hi = Math.max(...as.map(x => x.h)), lo = Math.min(...as.map(x => x.l)); const sweptH = af.some(x => x.h > hi), sweptL = af.some(x => x.l < lo); const px = m15[m15.length - 1].c; po3 = { hi, lo, sweptH, sweptL, px, inside: px <= hi && px >= lo, bars: af.length, dOpen: this.levels?.dOpen }; } } }
+      this.mtf = { sym, rows, po3, at: Date.now() };
+    } catch (e) { this.mtf = { sym, err: e.message }; } finally { this.mtfBusy = false; this.renderMTF(); }
+  }
+  renderMTF() {
+    const el = $('#pane-mtf'); if (!el || el.hidden) return; el.setAttribute('data-noi18n', ''); const ar = isAr(), T = (e, x) => ar ? x : e, M = this.mtf, L = this.levels || {}, dec = this.price ? decimals(this.price) : 2, f = v => v == null ? 'N/A' : fmt(v, dec);
+    let h = `<div class="grp">${T('Multi-timeframe bias', 'الاتجاه على كل الفريمات')}</div><div class="note">${T('DERIVED from candles with the same rules as the chart: last market-structure break, price vs the 50 EMA, and position in the latest swing range. A checklist, not a prediction.', 'مشتق من الشموع بنفس قواعد الشارت: آخر كسر هيكل، السعر مقابل EMA 50، ومكان السعر في آخر مدى سوينج. قايمة فحص مش توقع.')}</div><div class="row"><button class="btn" id="mtfRun">${this.mtfBusy ? '...' : T('Refresh', 'تحديث')}</button></div>`;
+    const dl = d => d === 'bull' ? `<b class="u">${T('Bull', 'صاعد')}</b>` : `<b class="d">${T('Bear', 'هابط')}</b>`;
+    if (M && M.err) h += `<div class="msg err">${esc(M.err)}</div>`;
+    if (M && M.rows) { h += `<div class="note">${esc(M.sym)}</div>`; let b = 0, r = 0;
+      for (const x of M.rows) { if (x.na) { h += `<div class="kv"><span>${x.tf}</span><span>N/A</span></div>`; continue; } if (x.st) (x.st.dir === 'bull' ? b++ : r++); (x.ema === 'bull' ? b++ : r++);
+        h += `<div class="kv"><span><b>${x.tf}</b> ${T('structure', 'هيكل')}</span><span>${x.st ? dl(x.st.dir) + ' ' + x.st.kind : 'N/A'}</span></div><div class="kv"><span>${x.tf} ${T('vs EMA50', 'مقابل EMA50')} · ${T('range', 'المدى')}</span><span>${dl(x.ema)} · ${x.pos == null ? 'N/A' : x.pos > 1 ? T('above range', 'فوق المدى') : x.pos < 0 ? T('below range', 'تحت المدى') : (x.pos < .5 ? T('discount', 'خصم') : T('premium', 'غالي')) + ' ' + Math.round(x.pos * 100) + '%'}</span></div>`; }
+      const tot = b + r; h += `<div class="grp">${T('Alignment', 'التوافق')}</div><div class="kv"><span>${T('Bull signals · bear signals', 'إشارات صاعدة · هابطة')}</span><span>${b} · ${r}</span></div><div class="note">${tot && (b === tot || r === tot) ? T('All timeframes agree. Agreement is not an edge by itself.', 'كل الفريمات متفقة. التوافق لوحده مش ميزة.') : T('Timeframes disagree: the higher timeframe usually matters more, but this is a rule of thumb, not tested.', 'الفريمات مختلفة: الأكبر غالبا أهم، بس دي قاعدة تقريبية مش مختبرة.')}</div>`; }
+    h += `<div class="grp">${T('Weekly / monthly levels', 'مستويات أسبوعية / شهرية')} (REAL)</div>${[['PWH', L.pwh], ['PWL', L.pwl], ['W.OPEN', L.wOpen], ['PMH', L.pmh], ['PML', L.pml], ['M.OPEN', L.mOpen]].map(([k, v]) => `<div class="kv"><span>${k}</span><span>${f(v)}</span></div>`).join('')}<div class="note">${T('Drawn on the chart (Sessions levels) only when within 6% of price. N/A means the exchange returned no such candle.', 'بتتعرض على الشارت (مستويات الجلسات) بس لما تكون في حدود 6% من السعر. N/A يعني البورصة مرجعتش الشمعة دي.')}</div>`;
+    if (M && M.po3) { const p = M.po3; let txt; if (p.sweptH && !p.sweptL) txt = p.inside ? T('Asia high swept, price back inside the Asia range. Textbook "manipulation up" shape (bearish distribution possible).', 'قمة آسيا اتكسر والسعر رجع جوه المدى. شكل "تلاعب لفوق" (ممكن توزيع هابط).') : p.px > p.hi ? T('Asia high swept and price is holding above it: no reversal shape yet.', 'قمة آسيا اتكسر والسعر ثابت فوقه: لسه مفيش شكل انعكاس.') : T('Asia high swept, price now below the Asia low area.', 'قمة آسيا اتكسر والسعر تحت.'); else if (p.sweptL && !p.sweptH) txt = p.inside ? T('Asia low swept, price back inside the Asia range. Textbook "manipulation down" shape (bullish distribution possible).', 'قاع آسيا اتكسر والسعر رجع جوه المدى. شكل "تلاعب لتحت" (ممكن توزيع صاعد).') : p.px < p.lo ? T('Asia low swept and price is holding below it: no reversal shape yet.', 'قاع آسيا اتكسر والسعر ثابت تحته: لسه مفيش شكل انعكاس.') : T('Asia low swept, price now above the Asia high area.', 'قاع آسيا اتكسر والسعر فوق.'); else if (p.sweptH && p.sweptL) txt = T('Both sides of the Asia range were swept: choppy, no clean Power of 3 shape.', 'الطرفين اتكسروا: سوق متقلب ومفيش شكل Power of 3 واضح.'); else txt = T('Asia range not swept yet: still accumulation / waiting.', 'مدى آسيا لسه ما اتكسرش: لسه تجميع / انتظار.');
+      h += `<div class="grp">Power of 3 (AMD) · ${T('DERIVED', 'مشتق')}</div><div class="kv"><span>${T('Asia range (NY 20:00-00:00)', 'مدى آسيا (نيويورك 20:00-00:00)')}</span><span>${f(p.lo)} - ${f(p.hi)}</span></div><div class="kv"><span>${T('Day open', 'افتتاح اليوم')}</span><span>${f(p.dOpen)}</span></div><div class="kv"><span>${T('Swept high · low', 'كسر الهاي · اللو')}</span><span>${p.sweptH ? 'YES' : 'no'} · ${p.sweptL ? 'YES' : 'no'}</span></div><div class="note">${txt}</div><div class="note">${T('Accumulation = Asia range, manipulation = sweep of it, distribution = the move after. Pattern recognition only, never tested for edge.', 'تجميع = مدى آسيا، تلاعب = كسره، توزيع = الحركة بعده. مجرد التعرف على الشكل، ومتختبرش.')}</div>`; }
+    else if (M && !M.err) h += `<div class="grp">Power of 3 (AMD)</div><div class="note">N/A: ${T('no complete Asia session in the loaded candles.', 'مفيش جلسة آسيا كاملة في الشموع المحملة.')}</div>`;
+    el.innerHTML = h; $('#mtfRun').onclick = () => this.runMTF(); if (!M && !this.mtfBusy) this.runMTF();
   }
   renderBT() {
     const el = $('#pane-bt'); if (!el || el.hidden) return; const ar = isAr(), B = this.bt ||= { len: 3000, rr: 2, kz: false }, R = this.btRes, esc2 = s => String(s).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch])); const T = (en, x) => ar ? x : en;
@@ -591,7 +617,7 @@ class App {
     $('#bSet').onclick = () => { const draw = () => { $('#sheetT').textContent = 'Settings'; $('#sheetB').innerHTML = settingsHTML(this.state); $('#sheetB').querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { setLang(b.dataset.lang); draw(); this.renderFeed(); this.renderAll && this.renderAll(); }); const cd = $('#setCd'); if (cd) cd.onchange = () => { this.state.countdown = cd.checked; this.save(); this.chart.invalidate(); }; }; draw(); $('#sheet').hidden = false; };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'bt') this.renderBT(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'bt') this.renderBT(); if (t === 'mtf') this.renderMTF(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
     this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('diag'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
