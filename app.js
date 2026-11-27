@@ -6,6 +6,7 @@ import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
 import { analyze } from './analyst.js';
 import { magnets } from './magnet.js';
+import { regime } from './regime.js';
 import { backtest, stats as btStats, DEFAULTS as BT0 } from './backtest.js';
 import { detectFlow, stackedImb } from './flow.js';
 import { loadProfileCandles, computeProfile } from './vp.js';
@@ -18,7 +19,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, vp: false, flowsig: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -344,7 +345,7 @@ class App {
       const sym = this.state.symbol, tf = this.state.tf; let c = []; let end = undefined;
       while (c.length < B.len) { const k = await fetchKlines(this.src, sym, tf, 1000, end); if (!k.length) break; c = k.concat(c); end = k[0].t - 1; if (k.length < 1000) break; this.btMsg = (ar ? 'جاري التحميل ' : 'Loading ') + c.length + '...'; this.renderBT(); }
       c = c.slice(-B.len); this.btMsg = ar ? 'جاري الحساب...' : 'Computing...'; this.renderBT(); await new Promise(r => setTimeout(r, 30));
-      const r = backtest(c, { rr: B.rr, kzOnly: B.kz }); const V = [['Base rule', 'القاعدة الأساسية', {}], ['Killzones only', 'كيلزون بس', { kzOnly: true }], ['+ HTF bias agrees', '+ اتجاه الفريم الأكبر متوافق', { mtf: true }], ['+ delta flip', '+ انقلاب الدلتا', { dflip: true }], ['All three', 'التلاتة مع بعض', { kzOnly: true, mtf: true, dflip: true }]].map(([en, arx, f]) => { const rr = backtest(c, { rr: B.rr, ...f }); return { en, ar: arx, st: btStats(rr.trades) }; });
+      const r = backtest(c, { rr: B.rr, kzOnly: B.kz }); const V = [['Base rule', 'القاعدة الأساسية', {}], ['Killzones only', 'كيلزون بس', { kzOnly: true }], ['+ HTF bias agrees', '+ اتجاه الفريم الأكبر متوافق', { mtf: true }], ['Trend regime only', 'وقت الترند بس', { regime: 'trend' }], ['Range regime only', 'وقت الرنج بس', { regime: 'range' }], ['+ delta flip', '+ انقلاب الدلتا', { dflip: true }], ['All three', 'التلاتة مع بعض', { kzOnly: true, mtf: true, dflip: true }]].map(([en, arx, f]) => { const rr = backtest(c, { rr: B.rr, ...f }); return { en, ar: arx, st: btStats(rr.trades) }; });
       this.btRes = { ...r, sym, tf, st: btStats(r.trades), cn: c.length, B: { ...B }, src: this.src.label, V }; this.btMsg = '';
     } catch (e) { this.btMsg = (ar ? 'فشل: ' : 'Failed: ') + e.message; } finally { this.btBusy = false; this.renderBT(); }
   }
@@ -375,6 +376,7 @@ class App {
     el.innerHTML = h; $('#mtfRun').onclick = () => this.runMTF(); if (!M && !this.mtfBusy) this.runMTF();
   }
   getMagnets() { if (!this.candles.length) return null; const k = this.state.ind.ict ? 'i' : 'n', k0 = this.candles.length + ':' + this.candles[this.candles.length - 1].t + ':' + Math.round(this.price || 0); const kk = k + k0; if (this._mgK === kk) return this._mg; const ict = this.ict || computeICT(this.candles, this.tfMs(), this.levels); const w = this.liq && this.state.ind.liq ? this.liq.stats().walls : []; this._mg = magnets(this.candles, ict, this.levels, w, this.tfMs()); this._mgK = kk; return this._mg; }
+  regimeTag() { if (!this.state.ind.regime || this.candles.length < 120) return null; const R = regime(this.candles); if (!R) return null; const ar = isAr(); return { text: (R.kind === 'trend' ? (ar ? 'ترند ' : 'TREND ') + (R.dir === 'up' ? '↑' : '↓') : R.kind === 'range' ? (ar ? 'رنج' : 'RANGE') : (ar ? 'انتقالي' : 'TRANSITION')) + ' · ADX ' + R.adx.toFixed(0), kind: R.kind }; }
   magnetLines() { if (!this.state.ind.magnet) return []; const m = this.getMagnets(); if (!m) return []; return [m.nearUp && { p: m.nearUp.p, name: 'MAG ' + m.nearUp.score }, m.nearDown && { p: m.nearDown.p, name: 'MAG ' + m.nearDown.score }].filter(Boolean); }
   renderMag() {
     const el = $('#pane-mag'); if (!el || el.hidden) return; el.setAttribute('data-noi18n', ''); const ar = isAr(), T = (e, x) => ar ? x : e, m = this.getMagnets(), d = this.price ? decimals(this.price) : 2;
@@ -384,6 +386,14 @@ class App {
     h += `<div class="grp">${T('Nearest target above / below', 'أقرب هدف فوق / تحت')}</div>${m.nearUp ? row(m.nearUp, 'BSL') : '<div class="kv"><span>BSL</span><span>N/A</span></div>'}${m.nearDown ? row(m.nearDown, 'SSL') : '<div class="kv"><span>SSL</span><span>N/A</span></div>'}<div class="grp">${T('Ranked pools', 'المناطق مرتبة')}</div>`;
     h += m.pools.slice(0, 8).map(o => `<div class="alrow"><span>${row(o, o.side === 'up' ? 'BSL' : 'SSL')}<div class="note">${o.factors.map(f => f.txt + ' +' + f.v).join(' · ')}${o.wall ? '' : ''}</div></span></div>`).join('');
     h += `<div class="note">${T('Order-book walls are PARTIAL: only walls seen since you opened the app, on one venue.', 'جدران الأوردر بوك PARTIAL: بس اللي اتشافت من وقت ما فتحت التطبيق، على بورصة واحدة.')}</div>`; el.innerHTML = h;
+  }
+  renderReg() {
+    const el = $('#pane-reg'); if (!el || el.hidden) return; el.setAttribute('data-noi18n', ''); const ar = isAr(), T = (e, x) => ar ? x : e, R = this.candles.length ? regime(this.candles) : null;
+    let h = `<div class="grp">${T('Market regime', 'حالة السوق')} · ${T('DERIVED', 'مشتق')} · ${this.state.symbol} ${this.state.tf}</div><div class="note">${T('Classifies the loaded candles as trend, range or transition using ADX(14) and a 20-bar efficiency ratio (net move divided by path travelled), and rates volatility by ATR percentile over 100 bars. Thresholds (ADX 25 / 20, efficiency 0.30 / 0.25) are common rules of thumb, not fitted. It describes the past, it does not predict the next move.', 'بيصنف الشموع المحملة ترند أو رنج أو انتقالي باستخدام ADX(14) ونسبة كفاءة 20 شمعة (الحركة الصافية على المسافة المقطوعة)، وبيقيّم التذبذب بنسبة ATR على آخر 100 شمعة. الحدود (ADX 25 / 20، الكفاءة 0.30 / 0.25) قواعد شائعة مش متظبطة. بيوصف الماضي ومبيتوقعش الحركة الجاية.')}</div>`;
+    if (!R) { el.innerHTML = h + `<div class="note">N/A: ${T('need at least 120 candles.', 'محتاج 120 شمعة على الأقل.')}</div>`; return; }
+    const kn = { trend: T('TREND', 'ترند') + ' (' + (R.dir === 'up' ? T('up', 'صاعد') : T('down', 'هابط')) + ')', range: T('RANGE', 'رنج'), transition: T('TRANSITION', 'انتقالي') }[R.kind], vn = R.vol ? { high: T('HIGH', 'عالي'), normal: T('NORMAL', 'عادي'), low: T('LOW', 'واطي') }[R.vol] : 'N/A';
+    const tip = { trend: T('Trending: continuation and pullback setups tend to behave better than fading extremes. Rule of thumb, not tested here.', 'ترند: صفقات الاستمرار والارتداد بتتصرف أحسن من عكس القمم والقيعان. قاعدة تقريبية مش مختبرة هنا.'), range: T('Ranging: fading the edges tends to behave better than chasing breakouts, and breakouts fail more often. Rule of thumb, not tested here.', 'رنج: العكس عند الحواف بيتصرف أحسن من مطاردة الكسر، والكسر بيفشل أكتر. قاعدة تقريبية مش مختبرة هنا.'), transition: T('Mixed signals: the market is between modes. Smaller size or waiting is the usual advice.', 'إشارات مختلطة: السوق بين حالتين. المعتاد تصغير الحجم أو الانتظار.') }[R.kind];
+    h += `<div class="kv"><span>${T('Regime', 'الحالة')}</span><span><b>${kn}</b></span></div><div class="kv"><span>ADX(14)</span><span>${R.adx.toFixed(1)}</span></div><div class="kv"><span>${T('Efficiency ratio (20)', 'نسبة الكفاءة (20)')}</span><span>${R.er.toFixed(2)}</span></div><div class="kv"><span>${T('Volatility (ATR percentile, 100 bars)', 'التذبذب (نسبة ATR، 100 شمعة)')}</span><span>${vn}${R.pct != null ? ' · ' + Math.round(R.pct * 100) + '%' : ''}</span></div><div class="note">${tip}</div><div class="note">${T('The Test tab can re-run the backtest in trend-only and range-only periods so you can see whether this rule behaves differently in each.', 'تبويب الاختبار بيقدر يعيد الباكتيست في فترات الترند بس والرنج بس عشان تشوف القاعدة بتتصرف مختلف ولا لأ.')}</div>`; el.innerHTML = h;
   }
   renderBT() {
     const el = $('#pane-bt'); if (!el || el.hidden) return; const ar = isAr(), B = this.bt ||= { len: 3000, rr: 2, kz: false }, R = this.btRes, esc2 = s => String(s).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch])); const T = (en, x) => ar ? x : en;
@@ -631,7 +641,7 @@ class App {
     $('#bSet').onclick = () => { const draw = () => { $('#sheetT').textContent = 'Settings'; $('#sheetB').innerHTML = settingsHTML(this.state); $('#sheetB').querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { setLang(b.dataset.lang); draw(); this.renderFeed(); this.renderAll && this.renderAll(); }); const cd = $('#setCd'); if (cd) cd.onchange = () => { this.state.countdown = cd.checked; this.save(); this.chart.invalidate(); }; }; draw(); $('#sheet').hidden = false; };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'bt') this.renderBT(); if (t === 'mag') this.renderMag(); if (t === 'mtf') this.renderMTF(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'bt') this.renderBT(); if (t === 'mag') this.renderMag(); if (t === 'reg') this.renderReg(); if (t === 'mtf') this.renderMTF(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
     this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('diag'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
@@ -654,6 +664,7 @@ class App {
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Gold lines (XAUUSDT / PAXGUSDT)</div>${chk('ind', 'goldAtr', 'Daily ATR lines (ATR +0.5 / +1 / -0.5 / -1)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}${chk('ind', 'goldTimes', 'Session / news time lines (COMEX settle, London open, LBMA fix)', this.isGold() ? (intraday ? '' : 'needs 1h or lower') : 'gold symbols only', !this.isGold() || !intraday)}
       ${chk('ind', 'magnet', 'Liquidity magnet lines (nearest above / below, score)')}
+      ${chk('ind', 'regime', 'Regime tag on chart (trend / range / transition)')}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
       <div class="note">Each layer below works on its own. The master switch hides all of them, and the boxes stay ticked.</div>

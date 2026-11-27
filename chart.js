@@ -100,6 +100,7 @@ export class Chart {
       }
       if (z.sessions) for (const l of ict.levels) { this.hline(l.p, l.name, th.blue, [6, 3]); this.edge(l.p, l.name, th.blue); }
     }
+    if (app.regimeTag) { const rt = app.regimeTag(); if (rt) { g.save(); g.font = '600 11px sans-serif'; const w = g.measureText(rt.text).width + 12; const x0 = 8, y0 = 34; g.fillStyle = 'rgba(15,19,28,.85)'; g.fillRect(x0, y0, w, 18); g.strokeStyle = rt.kind === 'trend' ? th.up : rt.kind === 'range' ? th.gold : th.blue; g.strokeRect(x0 + .5, y0 + .5, w - 1, 17); g.fillStyle = g.strokeStyle; g.textBaseline = 'middle'; g.fillText(rt.text, x0 + 6, y0 + 9); g.restore(); } }
     if (app.magnetLines) for (const l of app.magnetLines()) { this.hline(l.p, l.name, th.gold, [1, 5]); this.edge(l.p, l.name, th.gold); }
     const gp = app.goldLevels && app.goldLevels(); if (gp) {
       for (const l of gp.levels) { this.hline(l.p, l.name, th.gold, [2, 4]); this.edge(l.p, l.name, th.gold); }
