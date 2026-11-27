@@ -1,0 +1,117 @@
+// TAPE DELTA data layer. Real exchange data only. No synthetic fallback.
+export const SYMBOLS = [
+  { id: 'BTCUSDT', name: 'Bitcoin', kinds: ['fut', 'spot'] },
+  { id: 'ETHUSDT', name: 'Ethereum', kinds: ['fut', 'spot'] },
+  { id: 'SOLUSDT', name: 'Solana', kinds: ['fut', 'spot'] },
+  { id: 'BNBUSDT', name: 'BNB', kinds: ['fut', 'spot'] },
+  { id: 'XRPUSDT', name: 'XRP', kinds: ['fut', 'spot'] },
+  { id: 'PAXGUSDT', name: 'Gold token (PAXG)', kinds: ['fut', 'spot'] },
+  { id: 'XAUUSDT', name: 'Gold (XAU perp)', kinds: ['fut'] },
+];
+export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5 };
+export const SRC = {
+  fut: { key: 'fut', label: 'Binance Futures', rest: 'https://fapi.binance.com/fapi/v1', ws: ['wss://fstream.binance.com/stream'] },
+  spot: { key: 'spot', label: 'Binance Spot', rest: 'https://data-api.binance.vision/api/v3', ws: ['wss://data-stream.binance.vision/stream', 'wss://stream.binance.vision/stream'] },
+};
+
+async function jget(url, ms = 7000) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: ac.signal });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+const resolved = new Map(); // symbol -> source
+export function parseKline(k) {
+  const v = +k[5], bv = +k[9];
+  return { t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v, bv, sv: v - bv, d: 2 * bv - v, n: k[8] };
+}
+export async function resolveSource(sym, force = false) {
+  if (!force && resolved.has(sym)) return resolved.get(sym);
+  const info = SYMBOLS.find(s => s.id === sym) || { kinds: ['fut', 'spot'] };
+  const errs = [];
+  for (const kind of info.kinds) {
+    const src = SRC[kind];
+    try {
+      const k = await jget(`${src.rest}/klines?symbol=${sym}&interval=1m&limit=2`, 6000);
+      if (Array.isArray(k) && k.length) { resolved.set(sym, src); return src; }
+    } catch (e) { errs.push(`${src.label}: ${e.message}`); }
+  }
+  const err = new Error('No live feed reachable for ' + sym + ' (' + errs.join('; ') + ')');
+  err.tried = errs; throw err;
+}
+export async function fetchKlines(src, sym, tf, limit = 700, endTime) {
+  let u = `${src.rest}/klines?symbol=${sym}&interval=${tf}&limit=${limit}`;
+  if (endTime) u += `&endTime=${endTime}`;
+  return (await jget(u, 10000)).map(parseKline);
+}
+export async function fetchTrades(src, sym, limit = 1000, endTime) {
+  let u = `${src.rest}/aggTrades?symbol=${sym}&limit=${limit}`;
+  if (endTime) u += `&endTime=${endTime}`;
+  return (await jget(u, 10000)).map(parseTrade);
+}
+export function parseTrade(a) { return { id: a.a, t: a.T, p: +a.p, q: +a.q, side: a.m ? 'sell' : 'buy' }; }
+export async function fetchDepth(src, sym) {
+  const d = await jget(`${src.rest}/depth?symbol=${sym}&limit=20`, 5000);
+  return { bids: d.bids.map(x => [+x[0], +x[1]]), asks: d.asks.map(x => [+x[0], +x[1]]) };
+}
+export async function fetchTicker(src, sym) {
+  const d = await jget(`${src.rest}/ticker/24hr?symbol=${sym}`, 6000);
+  return { last: +d.lastPrice, chg: +d.priceChangePercent, hi: +d.highPrice, lo: +d.lowPrice, vol: +d.volume, qvol: +d.quoteVolume };
+}
+export async function fetchPrice(src, sym) {
+  const d = await jget(`${src.rest}/ticker/price?symbol=${sym}`, 6000);
+  return +d.price;
+}
+export async function fetchFutExtras(sym) { // futures only: funding, OI, mark
+  const [p, oi] = await Promise.allSettled([
+    jget(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`, 5000),
+    jget(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${sym}`, 5000)]);
+  return {
+    mark: p.status === 'fulfilled' ? +p.value.markPrice : null,
+    funding: p.status === 'fulfilled' ? +p.value.lastFundingRate : null,
+    oi: oi.status === 'fulfilled' ? +oi.value.openInterest : null,
+  };
+}
+
+// Live stream with reconnect, host fallback and staleness detection.
+export class Feed {
+  constructor(handlers) { this.h = handlers; this.ws = null; this.alive = false; this.retry = 0; this.hostIdx = 0; this.last = 0; this.timer = null; this.closed = false; }
+  open(src, sym, tf) {
+    this.close(); this.closed = false;
+    this.src = src; this.sym = sym; this.tf = tf; this.hostIdx = 0; this.retry = 0;
+    this._connect();
+    this.watch = setInterval(() => {
+      if (this.closed) return;
+      if (this.alive && Date.now() - this.last > 25000) { this.h.status('stale'); try { this.ws.close(); } catch {} }
+    }, 5000);
+  }
+  _connect() {
+    const hosts = this.src.ws; const host = hosts[this.hostIdx % hosts.length];
+    const s = this.sym.toLowerCase();
+    const url = `${host}?streams=${s}@kline_${this.tf}/${s}@aggTrade`;
+    this.h.status('connecting');
+    let ws; try { ws = new WebSocket(url); } catch (e) { return this._retry(); }
+    this.ws = ws; let opened = false;
+    ws.onopen = () => { opened = true; this.alive = true; this.retry = 0; this.last = Date.now(); this.h.status('live'); };
+    ws.onmessage = ev => {
+      this.last = Date.now();
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      const d = m.data; if (!d) return;
+      if (d.e === 'kline') { const k = d.k; this.h.kline({ t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, bv: +k.V, sv: +k.v - +k.V, d: 2 * +k.V - +k.v, n: k.n, closed: k.x }); }
+      else if (d.e === 'aggTrade') this.h.trade({ id: d.a, t: d.T, p: +d.p, q: +d.q, side: d.m ? 'sell' : 'buy' });
+    };
+    ws.onclose = () => { this.alive = false; if (this.closed || ws !== this.ws) return; if (!opened) this.hostIdx++; this._retry(); };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+  _retry() {
+    if (this.closed) return;
+    this.h.status('reconnecting');
+    const wait = Math.min(15000, 800 * 2 ** this.retry++);
+    this.timer = setTimeout(() => this._connect(), wait);
+  }
+  close() { this.closed = true; this.alive = false; clearTimeout(this.timer); clearInterval(this.watch); if (this.ws) { const w = this.ws; this.ws = null; try { w.close(); } catch {} } }
+}
