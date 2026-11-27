@@ -51,3 +51,18 @@ export function stackedImb(rows) {
     if (side && run && run.side === side && adj) { run.to = k; run.n++; } else { if (run && run.n >= 3) res.push(run); run = side ? { side, from: k, to: k, n: 1 } : null; } }
   if (run && run.n >= 3) res.push(run); return res;
 }
+
+// Price vs cumulative-delta divergence between two CONFIRMED swing points (3 bars each side). DERIVED from real taker-buy delta, rule-based, not backtested.
+// Bearish: price makes a higher high but cumulative delta (CVD) made a lower value at that high than at the previous swing high.
+// Bullish: price makes a lower low but CVD is higher than at the previous swing low. Only candles up to the confirming bar are used (no look-ahead).
+export function cvdDivergence(c, o = {}) {
+  const n = c.length, L = 3, minGap = o.minGap || 5, maxGap = o.maxGap || 80; if (n < 40) return [];
+  const cum = new Array(n), ab = new Array(n); let s = 0, a = 0; for (let i = 0; i < n; i++) { s += c[i].d; cum[i] = s; a += Math.abs(c[i].d); ab[i] = a / (i + 1); } /* ab[k] = running mean |delta| up to bar k, so thresholds use only past data */ const atr = wilderATR(c);
+  const out = []; let pH = null, pL = null;
+  for (let i = L; i < n - L; i++) {
+    let H = true, Lo = true; for (let j = 1; j <= L; j++) { if (!(c[i].h > c[i - j].h && c[i].h >= c[i + j].h)) H = false; if (!(c[i].l < c[i - j].l && c[i].l <= c[i + j].l)) Lo = false; }
+    if (H) { if (pH && i - pH.i >= minGap && i - pH.i <= maxGap && c[i].h > pH.p + 0.1 * atr[i] && cum[i] < pH.cvd - ab[i + L]) out.push({ type: 'bear', i1: pH.i, i2: i, conf: i + L, p1: pH.p, p2: c[i].h, c1: pH.cvd, c2: cum[i] }); pH = { i, p: c[i].h, cvd: cum[i] }; }
+    if (Lo) { if (pL && i - pL.i >= minGap && i - pL.i <= maxGap && c[i].l < pL.p - 0.1 * atr[i] && cum[i] > pL.cvd + ab[i + L]) out.push({ type: 'bull', i1: pL.i, i2: i, conf: i + L, p1: pL.p, p2: c[i].l, c1: pL.cvd, c2: cum[i] }); pL = { i, p: c[i].l, cvd: cum[i] }; }
+  }
+  return out;
+}
