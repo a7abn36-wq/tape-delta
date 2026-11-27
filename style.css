@@ -1,5 +1,5 @@
-:root{--bg:#0b0e14;--panel:#10151e;--line:#1c2433;--text:#c9d3e6;--mut:#7d8aa3;--up:#26a69a;--dn:#ef5350;--gold:#e6b84a;--blue:#4c8dff}
-:root.light{--bg:#fff;--panel:#f4f6fa;--line:#dde3ee;--text:#1c2433;--mut:#5b6578;--up:#13967f;--dn:#d43b3b;--gold:#b8860b;--blue:#1f6feb}
+:root{--bg:#0b0e14;--panel:#10151e;--line:#1c2433;--text:#eaf2ff;--mut:#a9bbd6;--cy:#22e3ff;--neon:#39ff9c;--mag:#ff4fd8;--up:#26a69a;--dn:#ef5350;--gold:#e6b84a;--blue:#4c8dff}
+:root.light{--cy:#0077a8;--neon:#00875a;--mag:#b0188f;--bg:#fff;--panel:#f4f6fa;--line:#dde3ee;--text:#1c2433;--mut:#5b6578;--up:#13967f;--dn:#d43b3b;--gold:#b8860b;--blue:#1f6feb}
 *{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:13px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overscroll-behavior:none}
 #app{height:100%;display:flex;flex-direction:column}
 #top{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto;white-space:nowrap;scrollbar-width:none;padding-top:max(6px,env(safe-area-inset-top))}
@@ -61,3 +61,17 @@ select,.btn,input{background:var(--bg);color:var(--text);border:1px solid var(--
 .jr{padding:6px 0;border-bottom:1px solid var(--line)}.jr input{width:100%;margin-top:3px}label input[type=number]{width:100%}.row label{flex:1;min-width:90px;display:flex;flex-direction:column;font-size:11px;color:var(--mut)}
 
 .rtl #side,.rtl #sheet .card{font-family:system-ui,'Segoe UI',Tahoma,sans-serif}.rtl .kv span:last-child{text-align:left;margin-left:0;margin-right:10px}.rtl .note,.rtl .why{line-height:1.7}.rtl #tabs{direction:rtl}
+
+/* Black Wolf theme: high-contrast text, cyan and neon accents */
+.brand{font-size:13px;color:var(--cy);text-shadow:0 0 8px rgba(34,227,255,.45);letter-spacing:.06em}
+.grp{color:var(--cy);font-weight:700;border-bottom:1px solid rgba(34,227,255,.25);padding-bottom:2px}
+.note{color:#b9c9e2}
+.kv span:first-child{color:#b4c6e0}.kv span:last-child{color:#ffffff;font-weight:600}
+.kv em{color:var(--gold)}
+.why{color:#e6f0ff}
+#tabs button.on{color:var(--cy);border-bottom-color:var(--cy)}
+#tabs button{color:#a9bbd6}
+.leg{color:#cfe0f7}
+.pane b,.pane strong{color:var(--neon)}
+:root.light .pane b,:root.light .pane strong{color:var(--neon)}
+:root.light .kv span:last-child,:root.light .note,:root.light .why,:root.light .leg{color:var(--text)}

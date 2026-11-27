@@ -722,7 +722,7 @@ class App {
     $('#wsReset').onclick = () => { if (confirm('Reset all settings, drawings and alerts?')) { localStorage.removeItem(KEY); location.reload(); } };
   }
   importWorkspace(j) {
-    if (!j || typeof j !== 'object' || j.app !== 'tape-delta') throw new Error('this is not a TAPE DELTA workspace file');
+    if (!j || typeof j !== 'object' || j.app !== 'tape-delta') throw new Error('this is not a Black Wolf Terminal workspace file');
     if (j.version !== 1) throw new Error('unsupported version ' + j.version); const st = j.state; if (!st || typeof st !== 'object') throw new Error('no state in file');
     const ok = (v, t) => typeof v === t; const s = this.state; let nd = 0, na = 0, skipped = 0;
     if (st.drawings && typeof st.drawings === 'object') for (const [sym, list] of Object.entries(st.drawings)) { if (!Array.isArray(list)) { skipped++; continue; } for (const d of list) { if (!d || !['hline', 'trend', 'rect', 'text', 'brush', 'measure'].includes(d.type) || !Array.isArray(d.pts) || !d.pts.every(p => p && isFinite(p.t) && isFinite(p.p))) { skipped++; continue; } const cur = (s.drawings[sym] ||= []); if (cur.some(x => x.id === d.id)) continue; cur.push({ id: d.id || uid(), type: d.type, pts: d.pts.map(p => ({ t: +p.t, p: +p.p })), text: d.text ? String(d.text).slice(0, 60) : undefined, color: typeof d.color === 'string' ? d.color : '#e6b84a' }); nd++; } }

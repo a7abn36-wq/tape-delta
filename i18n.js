@@ -1,4 +1,4 @@
-// TAPE DELTA language layer: English / Arabic (RTL panels), plus plain-language help for every panel and term.
+// Black Wolf Terminal language layer: English / Arabic (RTL panels), plus plain-language help for every panel and term.
 // Trading terms (CHoCH, FVG, OB, CVD...) stay in English on purpose; the Arabic text explains them.
 const LS = 'td_lang';
 export const lang = () => { try { return localStorage.getItem(LS) || 'en'; } catch { return 'en'; } };
