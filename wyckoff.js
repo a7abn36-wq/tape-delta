@@ -25,3 +25,23 @@ export function wyckoff(c) {
   const px = c[n - 1].c, broke = px > r.hi + 0.5 * A ? 'up' : px < r.lo - 0.5 * A ? 'down' : null;
   return { state: ev ? ev.type : broke ? 'broken' : 'range', range: r, ev, broke, px, A, bars: n - r.s0, avgV };
 }
+// Candidate signal rule (rule-based, NOT a prediction): a Spring closing back inside the range => BUY candidate, a UTAD => SELL candidate.
+// Extra filter: the signal bar must close in the upper half (Spring) / lower half (UTAD) of its own range, and the Spring must not sit inside a
+// range that led in from a rally (distribution), nor a UTAD in one that led in from a decline (accumulation).
+// Fires on the CLOSE of the event bar; the backtest enters at the NEXT bar's open, stop beyond the event extreme (+0.1 ATR), target rr x risk.
+export function wySignalAt(c, k, W) { // c = closed candles, k = index of the last closed bar
+  const w = W || wyckoff(c.slice(0, k + 1)); if (!w || !w.ev || w.ev.i !== k) return null; const x = c[k], r = w.range, A = w.A;
+  if (w.ev.type === 'spring') { if (r.kind === 'distribution') return null; if (!(x.c > (x.h + x.l) / 2)) return null; const stop = x.l - 0.1 * A; return { dir: 'bull', i: k, stop, ref: x.c, range: r, kind: r.kind }; }
+  if (r.kind === 'accumulation') return null; if (!(x.c < (x.h + x.l) / 2)) return null; const stop = x.h + 0.1 * A; return { dir: 'bear', i: k, stop, ref: x.c, range: r, kind: r.kind };
+}
+export function wyBacktest(c, o = {}) {
+  o = { rr: 2, fee: 0.04, maxHold: 60, ...o }; const n = c.length, trades = []; let busy = -1, seen = -1;
+  for (let k = 150; k < n - 1; k++) { const s = wySignalAt(c, k); if (!s || k <= busy) continue;
+    const bull = s.dir === 'bull', entry = c[k + 1].o, stop = s.stop, risk = Math.abs(entry - stop); if (!(risk > 0) || (bull ? stop >= entry : stop <= entry)) continue;
+    const tgt = bull ? entry + o.rr * risk : entry - o.rr * risk; let exit = null, res = null, j = k + 1;
+    for (; j < Math.min(n, k + 1 + o.maxHold); j++) { const hitS = bull ? c[j].l <= stop : c[j].h >= stop, hitT = bull ? c[j].h >= tgt : c[j].l <= tgt; if (hitS) { exit = stop; res = 'stop'; break; } if (hitT) { exit = tgt; res = 'target'; break; } }
+    if (exit == null) { if (k + 1 + o.maxHold > n) continue; j = k + o.maxHold; exit = c[j].c; res = 'time'; }
+    const R = (bull ? exit - entry : entry - exit) / risk - (o.fee / 100 * 2 * entry) / risk; busy = j; trades.push({ dir: s.dir, t: c[k + 1].t, i: k + 1, j, entry, stop, exit, res, R, kind: s.kind });
+  }
+  return { trades, n, o, from: c[0].t, to: c[n - 1].t };
+}
