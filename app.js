@@ -20,7 +20,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, wyckoff: true, vwapBands: false, cvdDiv: true, vp: false, flowsig: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, wyckoff: true, vwapBands: false, cvdDiv: true, ibor: false, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -683,7 +683,7 @@ class App {
       ${chk('ind', 'magnet', 'Liquidity magnet lines (nearest above / below, score)')}
       ${chk('ind', 'regime', 'Regime tag on chart (trend / range / transition)')}
       ${chk('ind', 'wyckoff', 'Wyckoff range box + Spring / UTAD mark')}
-      <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}${chk('ind', 'vwapBands', 'VWAP + 1 / 2 SD bands (volume-weighted, daily UTC reset)')}
+      <div class="grp">Overlays</div>${chk('ind', 'ibor', 'Opening Range + Initial Balance, NY 09:30 and London 03:00 (15m or lower)', intraday && TFS[s.tf] <= 900e3 ? '' : 'needs 15m or lower', !(TFS[s.tf] <= 900e3))}${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}${chk('ind', 'vwapBands', 'VWAP + 1 / 2 SD bands (volume-weighted, daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
       <div class="note">Each layer below works on its own. The master switch hides all of them, and the boxes stay ticked.</div>
       ${chk('ict', 'fvg', 'Fair value gaps (unfilled)', n('fvg'))}${chk('ict', 'ob', 'Order blocks (unmitigated)', n('ob'))}${chk('ict', 'liq', 'BSL / SSL, EQH / EQL, sweeps', n('liq'))}${chk('ict', 'struct', 'BOS / CHoCH + HH HL LH LL', n('struct'))}
