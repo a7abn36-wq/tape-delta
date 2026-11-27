@@ -20,7 +20,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, wyckoff: true, vwapBands: false, cvdDiv: true, ibor: false, absGate: true, vp: false, flowsig: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, wyckoff: true, vwapBands: false, cvdDiv: true, ibor: false, bubbles: false, absGate: true, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -44,6 +44,10 @@ class App {
     setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => this.renderAI(), 4000); setInterval(() => this.loadVP(), 20000); setInterval(() => { this.renderFeed(); if (this.state.countdown !== false && this.candles.length) this.chart.invalidate(); }, 1000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
+  async loadBubbles(force) {
+    if (!this.state.ind.bubbles) return; const key = this.state.symbol, now = Date.now(); if (!force && this.bub && this.bub.key === key && now - this.bub.at < 30000) return; if (this._bubBusy) return; this._bubBusy = true; const gen = this.gen;
+    try { let all = [], end; for (let p = 0; p < 5; p++) { const t = await fetchTrades(this.src, key, 1000, end); if (!t.length) break; all = t.concat(all); end = t[0].t - 1; } if (gen !== this.gen) return; const q = all.map(x => x.q).sort((x, y) => x - y); const thr = q.length >= 200 ? q[Math.floor(q.length * 0.99)] : Infinity; this.bub = { key, at: Date.now(), n: all.length, t0: all.length ? all[0].t : 0, thr, big: all.filter(x => x.q >= thr), max: q[q.length - 1] || 0 }; this.chart.invalidate(); } catch (e) { } finally { this._bubBusy = false; }
+  }
   tfMs() { return TFS[this.state.tf]; }
   visibleCandles() { return this.replay ? (this.replay.vis || this.candles.slice(0, this.replay.idx + 1)) : this.candles; }
   toast(msg, ms = 6000) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; $('#toasts').appendChild(d); while ($('#toasts').children.length > 4) $('#toasts').firstChild.remove(); setTimeout(() => d.remove(), ms); }
@@ -684,7 +688,7 @@ class App {
       ${chk('ind', 'magnet', 'Liquidity magnet lines (nearest above / below, score)')}
       ${chk('ind', 'regime', 'Regime tag on chart (trend / range / transition)')}
       ${chk('ind', 'wyckoff', 'Wyckoff range box + Spring / UTAD mark')}
-      <div class="grp">Overlays</div>${chk('ind', 'ibor', 'Opening Range + Initial Balance, NY 09:30 and London 03:00 (15m or lower)', intraday && TFS[s.tf] <= 900e3 ? '' : 'needs 15m or lower', !(TFS[s.tf] <= 900e3))}${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}${chk('ind', 'vwapBands', 'VWAP + 1 / 2 SD bands (volume-weighted, daily UTC reset)')}
+      <div class="grp">Overlays</div>${chk('ind', 'ibor', 'Opening Range + Initial Balance, NY 09:30 and London 03:00 (15m or lower)', intraday && TFS[s.tf] <= 900e3 ? '' : 'needs 15m or lower', !(TFS[s.tf] <= 900e3))}${chk('ind', 'bubbles', 'Large trades as bubbles on the chart: top 1% by size of the most recent ~5000 real trades (PARTIAL, recent window only)')}${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}${chk('ind', 'vwapBands', 'VWAP + 1 / 2 SD bands (volume-weighted, daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
       <div class="note">Each layer below works on its own. The master switch hides all of them, and the boxes stay ticked.</div>
       ${chk('ict', 'fvg', 'Fair value gaps (unfilled)', n('fvg'))}${chk('ict', 'ob', 'Order blocks (unmitigated)', n('ob'))}${chk('ict', 'liq', 'BSL / SSL, EQH / EQL, sweeps', n('liq'))}${chk('ict', 'struct', 'BOS / CHoCH + HH HL LH LL', n('struct'))}
