@@ -11,7 +11,7 @@ export const SYMBOLS = [
 export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5 };
 export const SRC = {
   fut: { key: 'fut', label: 'Binance Futures', rest: 'https://fapi.binance.com/fapi/v1', ws: ['wss://fstream.binance.com/stream'] },
-  spot: { key: 'spot', label: 'Binance Spot', rest: 'https://data-api.binance.vision/api/v3', ws: ['wss://data-stream.binance.vision/stream', 'wss://stream.binance.vision/stream'] },
+  spot: { key: 'spot', label: 'Binance Spot', rest: 'https://api.binance.com/api/v3', rests: ['https://api.binance.com/api/v3', 'https://data-api.binance.vision/api/v3'], ws: ['wss://stream.binance.com:443/stream', 'wss://stream.binance.com:9443/stream', 'wss://data-stream.binance.vision/stream'] },
 };
 
 async function jget(url, ms = 7000) {
@@ -35,10 +35,12 @@ export async function resolveSource(sym, force = false) {
   const errs = [];
   for (const kind of info.kinds) {
     const src = SRC[kind];
-    try {
-      const k = await jget(`${src.rest}/klines?symbol=${sym}&interval=1m&limit=2`, 6000);
-      if (Array.isArray(k) && k.length) { resolved.set(sym, src); return src; }
-    } catch (e) { errs.push(`${src.label}: ${e.message}`); }
+    for (const base of (src.rests || [src.rest])) {
+      try {
+        const k = await jget(`${base}/klines?symbol=${sym}&interval=1m&limit=2`, 6000);
+        if (Array.isArray(k) && k.length) { src.rest = base; resolved.set(sym, src); return src; }
+      } catch (e) { errs.push(`${src.label} (${base.split('/')[2]}): ${e.message}`); }
+    }
   }
   const err = new Error('No live feed reachable for ' + sym + ' (' + errs.join('; ') + ')');
   err.tried = errs; throw err;
@@ -64,6 +66,7 @@ export async function fetchTickWindow(src, sym, t0, t1, maxPages = 30) {
   }
   return { ticks: out, complete };
 }
+export async function fetchAggFrom(src, sym, fromId) { return (await jget(`${src.rest}/aggTrades?symbol=${sym}&fromId=${fromId}&limit=1000`, 6000)).map(parseTrade); }
 export function parseTrade(a) { return { id: a.a, t: a.T, p: +a.p, q: +a.q, side: a.m ? 'sell' : 'buy' }; }
 export async function fetchDepth(src, sym) {
   const d = await jget(`${src.rest}/depth?symbol=${sym}&limit=20`, 5000);
@@ -97,7 +100,7 @@ export class Feed {
     this._connect();
     this.watch = setInterval(() => {
       if (this.closed) return;
-      if (this.alive && Date.now() - this.last > 25000) { this.h.status('stale'); try { this.ws.close(); } catch {} }
+      if (this.alive && Date.now() - this.last > 90000) { this.h.status('stale'); try { this.ws.close(); } catch {} }
     }, 5000);
   }
   _connect() {
@@ -106,8 +109,8 @@ export class Feed {
     const url = `${host}?streams=${s}@kline_${this.tf}/${s}@aggTrade`;
     this.h.status('connecting');
     let ws; try { ws = new WebSocket(url); } catch (e) { return this._retry(); }
-    this.ws = ws; let opened = false;
-    ws.onopen = () => { opened = true; this.alive = true; this.retry = 0; this.last = Date.now(); this.h.status('live'); };
+    this.ws = ws; this.host = host.replace('wss://', '').replace('/stream', ''); let opened = false; const ct = setTimeout(() => { if (!opened) { try { ws.close(); } catch {} } }, 4500);
+    ws.onopen = () => { opened = true; clearTimeout(ct); this.alive = true; this.retry = 0; this.last = Date.now(); this.h.status('live'); };
     ws.onmessage = ev => {
       this.last = Date.now();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
@@ -115,14 +118,29 @@ export class Feed {
       if (d.e === 'kline') { const k = d.k; this.h.kline({ t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, bv: +k.V, sv: +k.v - +k.V, d: 2 * +k.V - +k.v, n: k.n, closed: k.x }); }
       else if (d.e === 'aggTrade') this.h.trade({ id: d.a, t: d.T, p: +d.p, q: +d.q, side: d.m ? 'sell' : 'buy' });
     };
-    ws.onclose = () => { this.alive = false; if (this.closed || ws !== this.ws) return; if (!opened) this.hostIdx++; this._retry(); };
+    ws.onclose = () => { clearTimeout(ct); this.alive = false; if (this.closed || ws !== this.ws) return; if (!opened) this.hostIdx++; this._retry(); };
     ws.onerror = () => { try { ws.close(); } catch {} };
   }
   _retry() {
     if (this.closed) return;
     this.h.status('reconnecting');
-    const wait = Math.min(15000, 800 * 2 ** this.retry++);
+    const n = this.retry++; const wait = n < this.src.ws.length * 2 ? 400 : Math.min(15000, 800 * 2 ** (n - 4));
     this.timer = setTimeout(() => this._connect(), wait);
   }
   close() { this.closed = true; this.alive = false; clearTimeout(this.timer); clearInterval(this.watch); if (this.ws) { const w = this.ws; this.ws = null; try { w.close(); } catch {} } }
 }
+
+// Diagnostics: which hosts this device can reach. Every row is a real test from this browser.
+const tget = async (url, ms = 6000) => { const t0 = performance.now(); const ac = new AbortController(); const to = setTimeout(() => ac.abort(), ms); try { const r = await fetch(url, { signal: ac.signal }); const ok = r.ok; await r.text(); return { ok, ms: Math.round(performance.now() - t0), note: ok ? '' : 'HTTP ' + r.status }; } catch (e) { return { ok: false, ms: Math.round(performance.now() - t0), note: e.name === 'AbortError' ? 'timeout ' + ms / 1000 + 's' : 'blocked / unreachable' }; } finally { clearTimeout(to); } };
+const twss = (url, sub, ms = 7000) => new Promise(res => { const t0 = performance.now(); let ws, done = false, tOpen = null; const fin = (ok, note) => { if (done) return; done = true; clearTimeout(to); try { ws.close(); } catch {} res({ ok, ms: Math.round(performance.now() - t0), note }); }; const to = setTimeout(() => fin(false, tOpen ? 'opened ' + tOpen + 'ms, no data in ' + ms / 1000 + 's' : 'timeout, never opened'), ms); try { ws = new WebSocket(url); } catch { return fin(false, 'cannot create'); } ws.onopen = () => { tOpen = Math.round(performance.now() - t0); if (sub) ws.send(JSON.stringify(sub)); }; ws.onmessage = ev => { let ok = true, note = 'open ' + tOpen + 'ms, first data'; if (sub) { try { const m = JSON.parse(ev.data); if (m.op === 'subscribe') { ok = m.success !== false; note = ok ? 'open ' + tOpen + 'ms, subscribed' : 'subscribe refused'; } else if (m.topic) { note = 'open ' + tOpen + 'ms, data'; } else return; } catch { return; } } fin(ok, note); }; ws.onerror = () => fin(false, tOpen ? 'error after open' : 'blocked / refused'); ws.onclose = () => fin(false, tOpen ? 'closed after open' : 'blocked / refused'); });
+export const DIAG_TESTS = [
+  { g: 'REST', n: 'api.binance.com', f: () => tget('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT') },
+  { g: 'REST', n: 'data-api.binance.vision', f: () => tget('https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT') },
+  { g: 'REST', n: 'fapi.binance.com (futures)', f: () => tget('https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT') },
+  { g: 'REST', n: 'api.bybit.com', f: () => tget('https://api.bybit.com/v5/market/time') },
+  { g: 'WS', n: 'stream.binance.com:443', f: () => twss('wss://stream.binance.com:443/ws/btcusdt@aggTrade') },
+  { g: 'WS', n: 'stream.binance.com:9443', f: () => twss('wss://stream.binance.com:9443/ws/btcusdt@aggTrade') },
+  { g: 'WS', n: 'data-stream.binance.vision', f: () => twss('wss://data-stream.binance.vision/ws/btcusdt@aggTrade') },
+  { g: 'WS', n: 'fstream.binance.com (futures)', f: () => twss('wss://fstream.binance.com/ws/btcusdt@aggTrade') },
+  { g: 'WS', n: 'stream.bybit.com spot', f: () => twss('wss://stream.bybit.com/v5/public/spot', { op: 'subscribe', args: ['publicTrade.BTCUSDT'] }) },
+];

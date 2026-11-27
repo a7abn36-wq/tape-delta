@@ -1,4 +1,4 @@
-import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, Feed } from './data.js';
+import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, fetchAggFrom, DIAG_TESTS, Feed } from './data.js';
 import { computeICT, wilderATR } from './ict.js';
 import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
@@ -33,7 +33,7 @@ class App {
     this.liq = new LiqMap(() => { this.chart.invalidate(); this.renderLiq(); }); this.chart = new Chart($('#cv'), this);
     this.feed = new Feed({ status: s => this.setFeedStatus(s), kline: k => this.onKline(k), trade: t => this.onTrade(t) });
     this.buildUI(); this.applyTheme(); this.load();
-    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000);
+    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => this.renderFeed(), 1000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
@@ -42,9 +42,44 @@ class App {
   applyTheme() { document.documentElement.classList.toggle('light', this.state.theme === 'light'); $('meta[name=theme-color]').content = this.state.theme === 'light' ? '#ffffff' : '#0b0e14'; this.chart.invalidate(); }
   setFeedStatus(s) { this.feedStatus = s; this.renderFeed(); }
   renderFeed() {
-    const el = $('#feed'), t = el.querySelector('span'); const src = this.src ? this.src.label : '';
-    const map = { live: ['live', 'LIVE'], connecting: ['warn', 'connecting'], reconnecting: ['warn', 'reconnecting'], stale: ['warn', 'stale, reconnecting'], down: ['bad', 'no feed'] };
-    const [c, l] = map[this.feedStatus] || ['bad', this.feedStatus]; const I = this.integ; const dq = !this.src ? '' : (I.bad || I.gaps) ? ' · data ⚠' : ' · data ✓'; el.className = 'feed ' + c; t.textContent = (src ? src + ' · ' : '') + l + dq;
+    const el = $('#feed'), t = el.querySelector('span'); const src = this.src ? this.src.label : ''; const now = Date.now(); const f = this.feed;
+    const wsOk = f.alive && now - (f.last || 0) < 90000, restOk = this.restOk && now - this.restOk < 7000; const age = this.lastUpdate ? Math.round((now - this.lastUpdate) / 1000) : null;
+    let c, l;
+    if (!this.src) { c = 'bad'; l = this.feedStatus === 'connecting' ? 'connecting' : 'no feed'; }
+    else if (wsOk) { c = 'live'; l = 'LIVE ' + (src.includes('Futures') ? 'Futures' : 'Binance') + ' WS'; }
+    else if (restOk) { c = 'live'; l = 'LIVE REST 2s'; }
+    else if (this.feedStatus === 'connecting') { c = 'warn'; l = 'connecting'; }
+    else { c = 'bad'; l = 'STALE'; }
+    const I = this.integ; const dq = !this.src ? '' : (I.bad || I.gaps) ? ' · data ⚠' : ' · data ✓'; el.className = 'feed ' + c; t.textContent = (src ? src.replace('Binance ', '') + ' · ' : '') + l + (age != null ? ' · ' + (age < 2 ? 'now' : age + 's') : '') + dq;
+  }
+  // REST fallback: when the websocket is silent for 4s, poll the latest candles and trades over REST every 2s. Same update path as the stream.
+  async restTick() {
+    if (this.replay || !this.src || !this.candles.length || this.restBusy) return; const f = this.feed; if (f.alive && Date.now() - (f.last || 0) < 4000) return;
+    this.restBusy = true; const gen = this.gen, src = this.src, sym = this.state.symbol, tf = this.state.tf;
+    try {
+      const ks = await fetchKlines(src, sym, tf, 2); if (gen !== this.gen) return;
+      const I = this.integ; let tr = [];
+      try { tr = I.lastAggId != null ? await fetchAggFrom(src, sym, I.lastAggId + 1) : (await import('./data.js').then(m => m.fetchTrades(src, sym, 50))); } catch {}
+      if (gen !== this.gen) return;
+      for (const k of ks) { const last = this.candles[this.candles.length - 1]; if (k.t >= last.t) this.onKline(k); }
+      for (const t of tr) this.onTrade(t);
+      this.restOk = Date.now(); this.renderFeed();
+    } catch { } finally { this.restBusy = false; }
+  }
+  async runDiag() {
+    const el = $('#pane-diag'); if (this.diagBusy) return; this.diagBusy = true; const rows = DIAG_TESTS.map(t => ({ ...t, r: null })); this.diagRows = rows; this.diagAt = new Date();
+    const paint = () => this.renderDiag(); paint(); await Promise.all(rows.map(async x => { x.r = await x.f(); paint(); })); this.diagBusy = false; paint();
+  }
+  renderDiag() {
+    const el = $('#pane-diag'); if (!el || el.hidden) return; const rows = this.diagRows || []; const f = this.feed; const cn = navigator.connection || {};
+    const row = x => `<div class="kv"><span>${x.g} ${x.n}</span><span class="${x.r ? (x.r.ok ? 'up' : 'dn') : ''}">${x.r ? (x.r.ok ? 'PASS ' + x.r.ms + 'ms' : 'FAIL') : '...'}</span></div>${x.r && x.r.note ? `<div class="note">${x.r.note}</div>` : ''}`;
+    el.innerHTML = `<div class="kv"><span>Active feed</span><span>${f.alive ? 'WS ' + (f.host || '') : (this.restOk && Date.now() - this.restOk < 7000 ? 'REST 2s (' + (this.src ? this.src.rest.split('/')[2] : '') + ')' : 'none')}</span></div>
+      <div class="kv"><span>Last update</span><span>${this.lastUpdate ? new Date(this.lastUpdate).toLocaleTimeString() : 'none'}</span></div>
+      <div class="kv"><span>Network</span><span>${navigator.onLine ? 'online' : 'offline'} · ${cn.effectiveType || '?'}</span></div>
+      <div class="kv"><span>Device time</span><span>${new Date().toLocaleString()}</span></div>
+      <button id="diagRun" class="btn">${this.diagBusy ? 'Testing...' : 'Run tests again'}</button>
+      ${rows.map(row).join('')}<div class="note">Tested from this browser, now. FAIL means this phone and network could not reach that host. Bybit rows are info only: Bybit is not used for chart data.</div>`;
+    const b = $('#diagRun'); if (b) b.onclick = () => this.runDiag();
   }
   // ---------- loading ----------
   async load() {
@@ -99,12 +134,12 @@ class App {
   async pollDepth() { if (!this.src || $('#pane-dom').hidden && !(matchMedia('(min-width:821px)').matches && false)) return; try { const gen = this.gen; const { fetchDepth } = await import('./data.js'); const d = await fetchDepth(this.src, this.state.symbol); if (gen === this.gen) { this.depth = d; this.renderDom(); } } catch {} }
   // ---------- live ----------
   onKline(k) {
-    if (this.replay) return; const c = this.candles; const last = c[c.length - 1]; if (!last) return;
+    if (this.replay) return; this.lastUpdate = Date.now(); const c = this.candles; const last = c[c.length - 1]; if (!last) return;
     if (k.t === last.t) c[c.length - 1] = k; else if (k.t > last.t) { c.push(k); if (this.chart.view.right > c.length - 3) this.chart.view.right += 1; this.chart.cache = {}; this.checkData(); }
     this.chart.cache.key = null; this.setPrice(k.c); this.recomputeICT(k.t !== last.t); this.chart.invalidate();
   }
   onTrade(t) {
-    const I = this.integ; if (I.lastAggId != null && t.id > I.lastAggId + 1) { I.missed += t.id - I.lastAggId - 1; const ce = this.ticks.get(Math.floor(t.t / this.tfMs()) * this.tfMs()); if (ce && ce.status === 'full') { ce.status = 'stale'; I.reloads++; this.tickQ.push(Math.floor(t.t / this.tfMs()) * this.tfMs()); this.pumpTicks(); } }
+    const I = this.integ; if (I.lastAggId != null && t.id <= I.lastAggId) return; this.lastUpdate = Date.now(); if (I.lastAggId != null && t.id > I.lastAggId + 1) { I.missed += t.id - I.lastAggId - 1; const ce = this.ticks.get(Math.floor(t.t / this.tfMs()) * this.tfMs()); if (ce && ce.status === 'full') { ce.status = 'stale'; I.reloads++; this.tickQ.push(Math.floor(t.t / this.tfMs()) * this.tfMs()); this.pumpTicks(); } }
     I.lastAggId = t.id;
     this.trades.push(t); if (this.trades.length > 20000) this.trades.splice(0, 5000);
     const ct = Math.floor(t.t / this.tfMs()) * this.tfMs(); let e = this.ticks.get(ct); if (!e) { e = { arr: [], status: 'live', lastId: 0 }; this.ticks.set(ct, e); }
@@ -483,8 +518,8 @@ class App {
     const tzb = $('#bTz'); tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; tzb.onclick = () => { this.state.tz = this.state.tz === 'UTC' ? 'local' : 'UTC'; tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; this.save(); this.chart.invalidate(); };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
-    this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('data'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('diag'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
     this.renderTools(); this.renderAlerts(); this.renderTape();
