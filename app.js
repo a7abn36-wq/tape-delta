@@ -50,7 +50,7 @@ class App {
     else if (restOk) { c = 'live'; l = 'LIVE REST 2s'; }
     else if (this.feedStatus === 'connecting') { c = 'warn'; l = 'connecting'; }
     else { c = 'bad'; l = 'STALE'; }
-    const I = this.integ; const dq = !this.src ? '' : (I.bad || I.gaps) ? ' · data ⚠' : ' · data ✓'; el.className = 'feed ' + c; t.textContent = (src ? src.replace('Binance ', '') + ' · ' : '') + l + (age != null ? ' · ' + (age < 2 ? 'now' : age + 's') : '') + dq;
+    const I = this.integ; const dq = !this.src ? '' : (I.bad || I.gaps) ? ' · data ⚠' : ' · data ✓'; el.className = 'feed ' + c; t.textContent = (src ? (this.src.key === 'fut' ? 'Futures perp' : 'Spot') + ' · ' : '') + l + (age != null ? ' · ' + (age < 2 ? 'now' : age + 's') : '') + dq;
   }
   // REST fallback: when the websocket is silent for 4s, poll the latest candles and trades over REST every 2s. Same update path as the stream.
   async restTick() {

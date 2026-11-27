@@ -36,10 +36,12 @@ export async function resolveSource(sym, force = false) {
   for (const kind of info.kinds) {
     const src = SRC[kind];
     for (const base of (src.rests || [src.rest])) {
-      try {
-        const k = await jget(`${base}/klines?symbol=${sym}&interval=1m&limit=2`, 6000);
-        if (Array.isArray(k) && k.length) { src.rest = base; resolved.set(sym, src); return src; }
-      } catch (e) { errs.push(`${src.label} (${base.split('/')[2]}): ${e.message}`); }
+      for (let at = 0; at < (kind === 'fut' ? 2 : 1); at++) { // futures REST can be slow on mobile networks: one patient retry before falling back to spot
+        try {
+          const k = await jget(`${base}/klines?symbol=${sym}&interval=1m&limit=2`, kind === 'fut' ? 10000 : 6000);
+          if (Array.isArray(k) && k.length) { src.rest = base; resolved.set(sym, src); return src; }
+        } catch (e) { if (at) errs.push(`${src.label} (${base.split('/')[2]}): ${e.message}`); }
+      }
     }
   }
   const err = new Error('No live feed reachable for ' + sym + ' (' + errs.join('; ') + ')');
@@ -97,6 +99,10 @@ export class Feed {
   open(src, sym, tf) {
     this.close(); this.closed = false;
     this.src = src; this.sym = sym; this.tf = tf; this.hostIdx = 0; this.retry = 0;
+    const ls = (k, v) => { try { return v === undefined ? JSON.parse(localStorage.getItem(k) || 'null') : localStorage.setItem(k, JSON.stringify(v)); } catch { return null; } };
+    this.ls = ls; const good = ls('td_wsgood_' + src.key), fails = ls('td_wsfail') || {}, now = Date.now();
+    let hs = src.ws.slice(); if (good && hs.includes(good)) hs = [good, ...hs.filter(x => x !== good)];
+    const fresh = hs.filter(h => !(fails[h] && now - fails[h] < 600000)); this.hosts = fresh.length ? fresh : hs;
     this._connect();
     this.watch = setInterval(() => {
       if (this.closed) return;
@@ -104,13 +110,13 @@ export class Feed {
     }, 5000);
   }
   _connect() {
-    const hosts = this.src.ws; const host = hosts[this.hostIdx % hosts.length];
+    const hosts = this.hosts; const host = hosts[this.hostIdx % hosts.length];
     const s = this.sym.toLowerCase();
     const url = `${host}?streams=${s}@kline_${this.tf}/${s}@aggTrade`;
     this.h.status('connecting');
     let ws; try { ws = new WebSocket(url); } catch (e) { return this._retry(); }
     this.ws = ws; this.host = host.replace('wss://', '').replace('/stream', ''); let opened = false; const ct = setTimeout(() => { if (!opened) { try { ws.close(); } catch {} } }, 4500);
-    ws.onopen = () => { opened = true; clearTimeout(ct); this.alive = true; this.retry = 0; this.last = Date.now(); this.h.status('live'); };
+    ws.onopen = () => { opened = true; clearTimeout(ct); this.ls('td_wsgood_' + this.src.key, host); const f = this.ls('td_wsfail') || {}; delete f[host]; this.ls('td_wsfail', f); this.alive = true; this.retry = 0; this.last = Date.now(); this.h.status('live'); };
     ws.onmessage = ev => {
       this.last = Date.now();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
@@ -118,13 +124,13 @@ export class Feed {
       if (d.e === 'kline') { const k = d.k; this.h.kline({ t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, bv: +k.V, sv: +k.v - +k.V, d: 2 * +k.V - +k.v, n: k.n, closed: k.x }); }
       else if (d.e === 'aggTrade') this.h.trade({ id: d.a, t: d.T, p: +d.p, q: +d.q, side: d.m ? 'sell' : 'buy' });
     };
-    ws.onclose = () => { clearTimeout(ct); this.alive = false; if (this.closed || ws !== this.ws) return; if (!opened) this.hostIdx++; this._retry(); };
+    ws.onclose = () => { clearTimeout(ct); this.alive = false; if (this.closed || ws !== this.ws) return; if (!opened) { this.hostIdx++; const f = this.ls('td_wsfail') || {}; f[host] = Date.now(); this.ls('td_wsfail', f); } this._retry(); };
     ws.onerror = () => { try { ws.close(); } catch {} };
   }
   _retry() {
     if (this.closed) return;
     this.h.status('reconnecting');
-    const n = this.retry++; const wait = n < this.src.ws.length * 2 ? 400 : Math.min(15000, 800 * 2 ** (n - 4));
+    const n = this.retry++; const wait = n < this.hosts.length ? 400 : Math.min(60000, 10000 * (n - this.hosts.length + 1)); // one quick pass over the hosts, then 10s, 20s ... up to 60s: gentle on battery while REST carries, and it keeps trying to upgrade back to the websocket
     this.timer = setTimeout(() => this._connect(), wait);
   }
   close() { this.closed = true; this.alive = false; clearTimeout(this.timer); clearInterval(this.watch); if (this.ws) { const w = this.ws; this.ws = null; try { w.close(); } catch {} } }
