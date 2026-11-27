@@ -14,7 +14,7 @@ import { Chart, decimals } from './chart.js';
 
 const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
-const DEF = {
+const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
   ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
@@ -104,7 +104,7 @@ class App {
     this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
     this.feed.open(src, symbol, tf);
     if (this.state.ind.liq) this.liq.start(src, symbol);
-    this.vp = null; this.vpKey = null; this.loadVP(true); this.loadLevels(gen); this.loadGold(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
+    this._ev = null; this.vp = null; this.vpKey = null; this.loadVP(true); this.loadLevels(gen); this.loadGold(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
   }
   showError(symbol, e) {
     const alt = SYMBOLS.find(s => s.kinds.includes('spot'));
@@ -308,7 +308,7 @@ class App {
   recomputeICT(force) {
     const now = Date.now(); if (!force && now - this.ictT < 2500) return; this.ictT = now;
     if (!this.state.ind.ict) { this.ict = null; return; }
-    const c = this.visibleCandles(); this.ict = computeICT(c, this.tfMs(), this.levels); this.renderIndCounts(); this.updateConf();
+    const c = this.visibleCandles(); this.ict = computeICT(c, this.tfMs(), this.levels); this.renderIndCounts(); this.updateConf(); this.checkEvents();
   }
   updateConf() {
     const c = this.visibleCandles(); const sc = sessionCVD(c, this.tfMs()); this.conf = this.ict ? confluence(c, this.ict, this.levels, sc, this.tfMs()) : null; this.renderChip(); this.renderWhy();
@@ -395,6 +395,15 @@ class App {
     if (window.Notification && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
     return { warn };
   }
+  checkEvents() {
+    if (this.replay) return; const E = this.state.evAl || {}, c = this.candles, I = this.ict, n = c.length; if (n < 40 || !I) return; const ar = isAr();
+    const ek = this.state.symbol + '|' + this.state.tf; let V = this._ev; const first = !V || V.k !== ek; if (first) V = this._ev = { k: ek };
+    const fire = (key, en, arx) => { this.toast('🔔 ' + (ar ? arx : en), 12000); this.beep(); try { navigator.vibrate?.([200, 100, 200]); } catch {} try { if (window.Notification && Notification.permission === 'granted') new Notification('TAPE DELTA', { body: (this.state.symbol + ' ' + this.state.tf + ': ') + (ar ? arx : en) }); } catch {} };
+    const st = [...I.struct].reverse().find(s => s.kind === 'CHoCH'); const kC = st ? c[st.i2] && c[st.i2].t + ':' + st.dir : null; if (!first && E.choch && kC && kC !== V.choch) fire('choch', `CHoCH ${st.dir === 'bull' ? 'up' : 'down'} (structure change)`, `CHoCH ${st.dir === 'bull' ? 'لأعلى' : 'لأسفل'} (تغيّر في الهيكل)`); V.choch = kC;
+    const sw = I.sweeps[I.sweeps.length - 1]; const kS = sw && c[sw.i] ? c[sw.i].t + ':' + sw.type : null; if (!first && E.sweep && kS && kS !== V.sweep) fire('sweep', `${sw.type === 'L' ? 'Sell-side' : 'Buy-side'} liquidity swept at ${fmt(sw.p, decimals(sw.p))}`, `سيولة ${sw.type === 'L' ? 'جهة البيع' : 'جهة الشراء'} اتكسرت عند ${fmt(sw.p, decimals(sw.p))}`); V.sweep = kS;
+    const a1 = c[n - 2], a0 = c[n - 3]; const kD = a1.t + ':' + Math.sign(a1.d); const flip = a1.v > 0 && Math.sign(a1.d) !== Math.sign(a0.d) && Math.abs(a1.d) >= 0.1 * a1.v; if (!first && E.delta && flip && kD !== V.delta) fire('delta', `Delta flipped ${a1.d > 0 ? 'positive' : 'negative'} on the last closed candle`, `الدلتا انقلبت ${a1.d > 0 ? 'موجبة' : 'سالبة'} في آخر شمعة مقفولة`); V.delta = kD;
+    const L = this.levels, px = this.price, pp = this.prevPrice; if (L && px != null && pp != null) { const day = Math.floor(Date.now() / 864e5); V.t = V.t || {}; for (const [nm, v] of [['PDH', L.pdh], ['PDL', L.pdl], ['D.OPEN', L.dOpen], ['W.OPEN', L.wOpen]]) { if (v == null) continue; const kk = nm + day; if (!first && E.touch && !V.t[kk] && ((pp < v && px >= v) || (pp > v && px <= v))) { V.t[kk] = 1; fire('touch', `Price touched ${nm} ${fmt(v, decimals(v))}`, `السعر لمس ${nm} عند ${fmt(v, decimals(v))}`); } } }
+  }
   checkAlerts(sym, p) {
     const prev = this._prev ||= {}; const pp = prev[sym]; prev[sym] = p; if (pp == null) return; const fired = [];
     for (const a of this.state.alerts) if (a.sym === sym && ((a.dir === 'up' && pp < a.level && p >= a.level) || (a.dir === 'down' && pp > a.level && p <= a.level))) fired.push(a);
@@ -471,6 +480,9 @@ class App {
     const mine = this.state.alerts;
     el.innerHTML = `<div class="grp">New alert · ${this.state.symbol}</div><div class="row"><input type="number" id="alLevel" step="any" placeholder="Price" value="${p ? p.toFixed(d) : ''}" inputmode="decimal"><select id="alDir"><option value="auto">Cross (auto)</option><option value="up">Cross up</option><option value="down">Cross down</option></select><button class="btn" id="alAdd">Add</button></div><div id="alMsg"></div>
     <div class="grp">Active (${mine.length})</div>` + (mine.length ? mine.map(a => `<div class="alrow"><span>${a.sym} ${a.dir === 'up' ? '≥ cross up' : '≤ cross down'} <b>${fmt(a.level, decimals(a.level))}</b></span><button class="btn" data-del="${a.id}">✕</button></div>`).join('') : '<div class="note">No alerts. They fire once when price crosses the level, even for other symbols (checked every 10 s) while the app is open.</div>');
+    { const E = this.state.evAl || (this.state.evAl = {}); const ar = isAr(); const row = (k, en, arx) => `<label class="chk"><input type="checkbox" data-ev="${k}" ${E[k] ? 'checked' : ''}> ${ar ? arx : en}</label>`;
+      el.insertAdjacentHTML('beforeend', `<div class="grp" data-noi18n>${ar ? 'تنبيهات الأحداث (للرمز والفريم الحاليين)' : 'Event alerts (current symbol and timeframe)'}</div>${row('choch', 'CHoCH (structure change)', 'CHoCH (تغيّر الهيكل)')}${row('sweep', 'Liquidity sweep', 'كسر سيولة')}${row('delta', 'Delta flip on a closed candle', 'انقلاب الدلتا في شمعة مقفولة')}${row('touch', 'Touch PDH / PDL / day open / week open', 'لمس PDH / PDL / فتح اليوم / فتح الأسبوع')}<div class="note" data-noi18n>${ar ? 'التنبيهات بتشتغل وبتنبهك (صوت + اهتزاز + إشعار) والصفحة مفتوحة بس. لو قفلت التطبيق مش هتوصلك، لأن مفيش سيرفر. كل تنبيه بيشتغل مرة لكل حدث.' : 'Alerts (sound, vibration, notification) work only while the page is open. They cannot reach you when the app is closed, because there is no server. Each event fires once.'}</div>`);
+      el.querySelectorAll('[data-ev]').forEach(i => i.onchange = () => { E[i.dataset.ev] = i.checked; this.save(); if (i.checked && window.Notification && Notification.permission === 'default') Notification.requestPermission().catch(() => {}); }); }
     $('#alAdd').onclick = () => { const r = this.addAlert(parseFloat($('#alLevel').value), $('#alDir').value); const m = $('#alMsg'); if (r.err) m.innerHTML = `<div class="msg err">${esc(r.err)}</div>`; else if (r.warn) { m.innerHTML = `<div class="msg warn">${esc(r.warn)}</div>`; } };
     el.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { this.state.alerts = this.state.alerts.filter(a => a.id !== b.dataset.del); this.save(); this.renderAlerts(); this.chart.invalidate(); });
   }

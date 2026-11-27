@@ -48,6 +48,7 @@ export class Chart {
     const { ctx: g, app } = this; const th = TH[app.state.theme]; this.th = th;
     const W = this.W, H = this.H; g.clearRect(0, 0, W, H); g.fillStyle = th.bg; g.fillRect(0, 0, W, H);
     const c = this.c; if (!c.length) { g.fillStyle = th.text; g.font = '14px system-ui'; g.fillText(app.loadMsg || 'Loading...', 20, 40); return; }
+    { const vis = this.plotW / this.view.barW; if (isFinite(vis)) this.view.right = Math.min(Math.max(this.view.right, vis * 0.4), c.length + vis * 0.6); } // keep some candles on screen: never scroll into an empty range
     const lay = this.layout(); this.lay = lay; const [lo, hi, i0, i1] = this.range(); this.rg = [lo, hi, i0, i1];
     const mh = lay.mainH; this.ymap = p => mh - (p - lo) / (hi - lo) * mh; this.pmap = y => lo + (mh - y) / mh * (hi - lo);
     const dec = decimals(c[c.length - 1].c); this.dec = dec; const bw = this.view.barW;
@@ -195,6 +196,7 @@ export class Chart {
       if (k === 'scvd') { const sc = this.cache.scvd ||= (sessionCVD(c, app.tfMs()) || { none: 1 }); vals = sc.none ? c.map(() => NaN) : sc.v; if (sc.none) { g.fillStyle = th.text; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText('Session CVD needs a 1h or lower timeframe', 8, top + 46); } else { g.strokeStyle = th.grid; g.setLineDash([2, 3]); g.fillStyle = th.text; g.font = '9px system-ui'; g.textAlign = 'left'; for (const st2 of sc.starts) { if (st2.i < i0 - 1 || st2.i > i1 + 1) continue; const x2 = this.xOf(st2.i) - bw / 2; g.beginPath(); g.moveTo(x2, top); g.lineTo(x2, top + h); g.stroke(); g.fillText(st2.name, x2 + 3, top + h - 6); } g.setLineDash([]); } }
       else if (k === 'delta') vals = c.map(b => b.d); else if (k === 'cvd') { vals = this.cache.cvd ||= (() => { let s = 0; return c.map(b => (s += b.d)); })(); } else vals = this.cache.rsi ||= rsi(c);
       let mn = Infinity, mx = -Infinity; for (let i = i0; i <= i1; i++) { const v = vals[i]; if (isNaN(v)) continue; mn = Math.min(mn, v); mx = Math.max(mx, v); }
+      if (!isFinite(mn) || !isFinite(mx)) { mn = 0; mx = 0; }
       if (k === 'delta') { const m = Math.max(Math.abs(mn), Math.abs(mx)) || 1; mn = -m; mx = m; } else if (k === 'rsi') { mn = 0; mx = 100; } else { if (!isFinite(mn)) { mn = 0; mx = 1; } const pd = (mx - mn) * .1 || 1; mn -= pd; mx += pd; }
       const y = v => top + 14 + (1 - (v - mn) / (mx - mn)) * (h - 22);
       if (k === 'delta') {
