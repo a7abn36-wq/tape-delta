@@ -149,3 +149,12 @@ export function vwap(c, tfMs) { // resets each UTC day
   for (const b of c) { const d = Math.floor(b.t / 864e5); if (d !== day) { day = d; pv = 0; vv = 0; } const tp = (b.h + b.l + b.c) / 3; pv += tp * b.v; vv += b.v; o.push(vv ? pv / vv : NaN); }
   return o;
 }
+
+// Daily-reset VWAP with volume-weighted standard-deviation bands of the typical price (hlc3). Bands at 1 and 2 SD. DERIVED from candle volume.
+export function vwapBands(c) {
+  const n = c.length, o = { v: new Array(n).fill(NaN), u1: [], d1: [], u2: [], d2: [] }; for (const k of ['u1', 'd1', 'u2', 'd2']) o[k] = new Array(n).fill(NaN);
+  let pv = 0, vv = 0, p2 = 0, day = -1;
+  for (let i = 0; i < n; i++) { const b = c[i], d = Math.floor(b.t / 864e5); if (d !== day) { day = d; pv = 0; vv = 0; p2 = 0; } const tp = (b.h + b.l + b.c) / 3; pv += tp * b.v; vv += b.v; p2 += tp * tp * b.v;
+    if (vv > 0) { const m = pv / vv, sd = Math.sqrt(Math.max(0, p2 / vv - m * m)); o.v[i] = m; o.u1[i] = m + sd; o.d1[i] = m - sd; o.u2[i] = m + 2 * sd; o.d2[i] = m - 2 * sd; } }
+  return o;
+}

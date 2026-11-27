@@ -1,4 +1,4 @@
-import { ema, rsi, vwap } from './ict.js';
+import { ema, rsi, vwap, vwapBands } from './ict.js';
 import { sessionCVD, avwap, idxAtOrAfter, detectFlow } from './flow.js';
 const TH = {
   dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
@@ -83,10 +83,11 @@ export class Chart {
     }
     // overlays
     const ind = st.ind; const line = (arr, col, w = 1.3) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); let s = false; for (let i = Math.max(0, i0 - 1); i <= Math.min(c.length - 1, i1 + 1); i++) { if (isNaN(arr[i])) { s = false; continue; } const x = this.xOf(i), y = this.ymap(arr[i]); if (!s) { g.moveTo(x, y); s = true; } else g.lineTo(x, y); } g.stroke(); };
-    const cacheKey = c.length + ':' + c[c.length - 1].t + ':' + c[0].t;
+    const lastB = c[c.length - 1]; const cacheKey = c.length + ':' + lastB.t + ':' + c[0].t + ':' + lastB.c + ':' + lastB.v;
     if (this.cache.key !== cacheKey) this.cache = { key: cacheKey };
     for (const n of [9, 21, 50, 200]) if (ind['ema' + n]) line(this.cache['e' + n] ||= ema(c, n), { 9: '#ffd54f', 21: '#ff9800', 50: '#4c8dff', 200: '#e040fb' }[n]);
     if (ind.vwap) line(this.cache.vw ||= vwap(c, app.tfMs()), '#00bcd4');
+    if (ind.vwapBands) { const vb = this.cache.vb ||= vwapBands(c); line(vb.v, '#00bcd4', 1.6); g.setLineDash([5, 3]); line(vb.u1, '#4dd0e1', 1); line(vb.d1, '#4dd0e1', 1); g.setLineDash([2, 3]); line(vb.u2, '#80deea', 1); line(vb.d2, '#80deea', 1); g.setLineDash([]); }
     this.drawAVWAP(g, th, c, line, i0, i1);
     if (app.integ && app.integ.issues.size) for (let i = i0; i <= i1; i++) if (app.integ.issues.has(i)) { g.fillStyle = th.gold; g.font = 'bold 11px system-ui'; g.textAlign = 'center'; g.fillText('!', this.xOf(i), this.ymap(c[i].h) - 8); g.textAlign = 'left'; }
     // ICT lines
