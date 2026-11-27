@@ -1,6 +1,7 @@
 // Rules-based market analyst. Runs on the phone, no external API, no cost. It reads what the app already computes
 // (structure, liquidity, zones, order flow, ATR) and writes a short reading. It is a checklist in words, not a prediction.
 import { wilderATR, nyHour } from './ict.js';
+import { detectFlow } from './flow.js';
 const f = (v, d = 2) => v == null || !isFinite(v) ? 'n/a' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 export function analyze(app, ar) {
   const c = app.visibleCandles(), n = c.length, k = app.conf, I = app.ict; if (n < 40 || !I || !k) return null;
@@ -25,6 +26,8 @@ export function analyze(app, ar) {
   if (dp > 0 && ds < 0) F.push(t(`Divergence: price rose over ${m} candles but net delta is negative. The rise has weak buying behind it (bearish warning).`, `تباعد: السعر طلع خلال ${m} شمعة بس الدلتا الصافية سالبة. الصعود ده وراه شراء ضعيف (تحذير هابط).`));
   else if (dp < 0 && ds > 0) F.push(t(`Divergence: price fell over ${m} candles but net delta is positive. The fall has weak selling behind it (bullish warning).`, `تباعد: السعر نزل خلال ${m} شمعة بس الدلتا الصافية موجبة. النزول ده وراه بيع ضعيف (تحذير صاعد).`));
   else F.push(t(`Price and delta over the last ${m} candles agree (${dp >= 0 ? 'up' : 'down'}).`, `السعر والدلتا خلال آخر ${m} شمعة متفقين (${dp >= 0 ? 'صعود' : 'هبوط'}).`));
+  const fs = detectFlow(c, I, 12).slice(-3); const nm = { ABS: ['absorption', 'امتصاص'], EXH: ['exhaustion', 'إرهاق'], RUN: ['stop run', 'ضرب ستوبات'] };
+  for (const s of fs) { const ago = n - 1 - s.i; F.push(t(`Signal: ${nm[s.kind][0]} (${s.dir === 'bull' ? 'bullish' : 'bearish'}) ${ago === 0 ? 'on the current candle' : ago + ' candles ago'}: ${s.note}.`, `إشارة: ${nm[s.kind][1]} (${s.dir === 'bull' ? 'صاعدة' : 'هابطة'}) ${ago === 0 ? 'في الشمعة الحالية' : 'من ' + ago + ' شمعة'}.`)); }
   const dep = app.depth; if (dep && dep.bids && dep.asks) { const b = dep.bids.reduce((s, x) => s + x[1], 0), a = dep.asks.reduce((s, x) => s + x[1], 0), sh = Math.round(b / (a + b) * 100); F.push(t(`Order book (top 20 levels): ${sh}% of size is on the bid side. Resting orders can be pulled, so treat it as a hint only.`, `الأوردر بوك (أعلى 20 مستوى): ${sh}% من الحجم في جهة الشراء. الأوامر المستنية ممكن تتسحب فاعتبرها تلميح بس.`)); }
   out.sections.push([t('Order flow', 'الأوردر فلو'), F]);
   // 4 liquidity

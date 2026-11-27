@@ -5,6 +5,7 @@ import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
 import { analyze } from './analyst.js';
+import { detectFlow, stackedImb } from './flow.js';
 import { loadProfileCandles, computeProfile } from './vp.js';
 import { init as i18nInit, apply as i18nApply, setLang, helpHTML, settingsHTML, isAr } from './i18n.js';
 import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChange, corr } from './gold.js';
@@ -15,7 +16,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = {
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, vp: false },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -295,6 +296,7 @@ class App {
       if (k === poc) { g.strokeStyle = '#e6b84a'; g.lineWidth = 1.2; g.strokeRect(left, y1, w, h); }
       if (h >= 9) { g.font = (h >= 12 ? 10 : 8) + 'px ui-monospace,monospace'; g.textBaseline = 'middle'; const imb = r[1] >= 3 * r[0] && r[1] > 0, imbS = r[0] >= 3 * r[1] && r[0] > 0; g.fillStyle = imbS ? '#ff8a80' : th.ax; g.textAlign = 'right'; g.fillText(fmtV(r[0]), x - 3, y1 + h / 2); g.fillStyle = imb ? '#69f0ae' : th.ax; g.textAlign = 'left'; g.fillText(fmtV(r[1]), x + 3, y1 + h / 2); }
     }
+    for (const sk of stackedImb(rows)) { const yT = ch.ymap((sk.to + 1) * step), yB = ch.ymap(sk.from * step); g.fillStyle = sk.side === 'buy' ? '#69f0ae' : '#ff8a80'; if (sk.side === 'buy') g.fillRect(left + w - 2, yT, 3, yB - yT); else g.fillRect(left - 1, yT, 3, yB - yT); g.font = 'bold 8px system-ui'; g.textAlign = sk.side === 'buy' ? 'left' : 'right'; g.fillText(sk.n + 'x', sk.side === 'buy' ? left + w + 2 : left - 2, (yT + yB) / 2); }
     g.strokeStyle = th.cross; g.lineWidth = 1; g.beginPath(); g.moveTo(x, ch.ymap(b.h)); g.lineTo(x, ch.ymap(b.l)); g.stroke();
     let buy = 0, sell = 0; for (const t of this.ticksUpTo(b.t)) { if (t[2]) buy += t[1]; else sell += t[1]; } const d = e.status === 'full' || e.status === 'live' ? buy - sell : b.d;
     g.font = 'bold 10px ui-monospace,monospace'; g.textAlign = 'center'; g.fillStyle = d >= 0 ? th.up : th.dn; g.fillText('Δ ' + fmtV(d), x, ch.ymap(b.l) + 11);
@@ -555,7 +557,7 @@ class App {
     const intraday = TFS[s.tf] <= 3600e3; const n = k => s.ind.ict && cnt[k] !== undefined ? (cnt[k] ? cnt[k] + ' in range' : 'none in range') : '';
     $('#sheetT').textContent = 'Indicators'; $('#sheetB').innerHTML =
       `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'scvd', 'Session CVD (resets Asia / London / NY)', intraday ? '' : 'needs 1h or lower', !intraday)}${chk('ind', 'cvd', 'CVD (from first loaded bar)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
-      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'vp', 'Volume profile: POC / VAH / VAL (approximate, from 1m candles)')}<div class="row"><select id="vpMode"><option value="session">Profile: current session</option><option value="day">Profile: day (UTC)</option><option value="week">Profile: week (from Monday UTC)</option></select></div>${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
+      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'flowsig', 'Order-flow signals: ABS absorption, EXH exhaustion, RUN stop run')}${chk('ind', 'vp', 'Volume profile: POC / VAH / VAL (approximate, from 1m candles)')}<div class="row"><select id="vpMode"><option value="session">Profile: current session</option><option value="day">Profile: day (UTC)</option><option value="week">Profile: week (from Monday UTC)</option></select></div>${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}

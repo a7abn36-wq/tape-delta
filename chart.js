@@ -1,5 +1,5 @@
 import { ema, rsi, vwap } from './ict.js';
-import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
+import { sessionCVD, avwap, idxAtOrAfter, detectFlow } from './flow.js';
 const TH = {
   dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
   light: { bg: '#ffffff', panel: '#f4f6fa', grid: '#e6eaf1', text: '#5b6578', ax: '#1c2433', up: '#13967f', dn: '#d43b3b', cross: '#8a94a8', gold: '#b8860b', blue: '#1f6feb' },
@@ -114,6 +114,8 @@ export class Chart {
     g.restore();
     // axis tag for last price
     g.fillStyle = last.c >= last.o ? th.up : th.dn; g.fillRect(this.plotW, ly - 9, AXW, 18); g.fillStyle = '#fff'; g.font = 'bold 11px ui-monospace,Menlo,monospace'; g.textAlign = 'left'; g.fillText(fmtP(last.c, dec), this.plotW + 5, ly);
+    if (app.state.ind.flowsig !== false && !app.replay) { const lc = c[c.length - 1], key = c.length + ':' + Math.round(lc.v * 1e3) + ':' + lc.c + ':' + (app.ict ? app.ict.sweeps.length : 0); if (this.fsK !== key) { this.fsK = key; this.fsig = detectFlow(c, app.ict); } g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); g.font = 'bold 9px system-ui'; g.textAlign = 'center'; const col = { ABS: '#e6b84a', EXH: '#c792ea', RUN: '#ff9e64' };
+    for (const s of this.fsig) { if (s.i < i0 - 1 || s.i > i1 + 1) continue; const b = c[s.i], x = this.xOf(s.i), up = s.dir === 'bull', y = up ? this.ymap(b.l) + 12 + (s.kind === 'EXH' ? 10 : s.kind === 'RUN' ? 20 : 0) : this.ymap(b.h) - 6 - (s.kind === 'EXH' ? 10 : s.kind === 'RUN' ? 20 : 0); g.fillStyle = col[s.kind]; g.fillText(s.kind + (up ? '↑' : '↓'), x, y); } g.restore(); }
     if (app.state.ind.vp && app.vp && !app.replay) { const V = app.vp, mw = this.plotW * 0.26; g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); for (let i = 0; i < V.rows; i++) { const y1 = this.ymap(V.lo + (i + 1) * V.step), y0 = this.ymap(V.lo + i * V.step); const w = V.v[i] / V.max * mw; g.fillStyle = i >= V.a && i <= V.b ? 'rgba(88,166,255,.38)' : 'rgba(150,160,180,.22)'; if (i === V.pocI) g.fillStyle = 'rgba(240,185,11,.6)'; g.fillRect(this.plotW - w, y1 + .5, w, Math.max(1, y0 - y1 - 1)); }
       const ln = (p, col, lab, dash) => { const y = Math.round(this.ymap(p)) + .5; g.strokeStyle = col; g.lineWidth = 1; g.setLineDash(dash); g.beginPath(); g.moveTo(this.plotW - mw - 40, y); g.lineTo(this.plotW, y); g.stroke(); g.setLineDash([]); g.fillStyle = col; g.font = '10px system-ui'; g.textAlign = 'left'; g.fillText(lab + ' ' + fmtP(p, dec), this.plotW - mw - 40, y - 3); };
       ln(V.poc, '#f0b90b', 'POC', []); ln(V.vah, '#58a6ff', 'VAH', [4, 3]); ln(V.val, '#58a6ff', 'VAL', [4, 3]); g.fillStyle = th.text; g.font = '9px system-ui'; g.textAlign = 'right'; g.fillText('VP ' + V.label + ' · approx', this.plotW - 4, this.H - 36); g.restore(); }
