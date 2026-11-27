@@ -1,5 +1,6 @@
 import { ema, rsi, vwap, vwapBands } from './ict.js';
 import { ibor } from './ibor.js';
+import * as DR from './draw.js';
 import { sessionCVD, avwap, idxAtOrAfter, detectFlow, cvdDivergence, gateAbs } from './flow.js';
 const TH = {
   dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cu: '#00ffe0', cd: '#ff3d1f', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
@@ -246,7 +247,7 @@ export class Chart {
   drawings(g, th, c) {
     const list = this.app.drawingsFor(); const sel = this.app.selDraw;
     for (const d of list) {
-      g.strokeStyle = d.color || th.gold; g.fillStyle = d.color || th.gold; g.lineWidth = d.id === sel ? 3 : 1.6; g.setLineDash([]);
+      g.strokeStyle = d.color || th.gold; g.fillStyle = d.color || th.gold; g.lineWidth = d.w ? d.w + (d.id === sel ? 1.2 : 0) : (d.id === sel ? 3 : 1.6); g.setLineDash([]);
       const a = d.pts[0] && this.P(d.pts[0]), b = d.pts[1] && this.P(d.pts[1]);
       if (d.type === 'hline') { g.beginPath(); g.moveTo(0, a.y); g.lineTo(this.plotW, a.y); g.stroke(); g.font = '10px system-ui'; g.textAlign = 'left'; g.fillText(fmtP(d.pts[0].p, this.dec), 4, a.y - 6); }
       else if (d.type === 'trend' && b) { g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); for (const q of [a, b]) { g.beginPath(); g.arc(q.x, q.y, 3, 0, 7); g.fill(); } }
@@ -254,12 +255,16 @@ export class Chart {
       else if (d.type === 'text') { g.font = 'bold 13px system-ui'; g.textAlign = 'left'; g.fillText(d.text, a.x, a.y); }
       else if (d.type === 'brush') { g.beginPath(); d.pts.forEach((p, k) => { const q = this.P(p); k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y); }); g.stroke(); }
       else if (d.type === 'measure' && b) this.measure(g, th, d.pts[0], d.pts[1], true);
+      else if (DR.has(d.type)) DR.render(this, g, th, d, d.id === sel);
     }
+    const sd = list.find(d => d.id === sel); if (sd && sd.type !== 'brush') { for (const q of this.handlePts(sd)) { g.setLineDash([]); g.fillStyle = '#fff'; g.strokeStyle = sd.color || th.gold; g.lineWidth = 2; g.beginPath(); g.arc(q.x, q.y, 7, 0, 7); g.fill(); g.stroke(); } }
+    this.app.syncDrawBar && this.app.syncDrawBar();
     const p = this.pending; if (p && p.pts.length) {
       const m = this.mouse; const cur = m ? { t: this.tOfIdx(Math.round(this.iOf(m.x))), p: this.pOf(m.y) } : p.pts[0];
       const a = this.P(p.pts[0]), b = this.P(p.pts[1] || cur);
       g.strokeStyle = th.gold; g.lineWidth = 1.5; g.setLineDash([4, 3]);
-      if (p.type === 'rect') g.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      if (DR.has(p.type)) { const n = DR.DEFS[p.type].n, pts = p.pts.slice(); while (pts.length < n) pts.push(pts.length > 1 ? pts[pts.length - 1] : cur); g.setLineDash([]); DR.render(this, g, th, { type: p.type, pts, color: th.gold }, false); for (const q of p.pts) { const z = this.P(q); g.fillStyle = '#fff'; g.beginPath(); g.arc(z.x, z.y, 5, 0, 7); g.fill(); } }
+      else if (p.type === 'rect') g.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
       else if (p.type === 'brush') { g.beginPath(); p.pts.forEach((pt, k) => { const q = this.P(pt); k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y); }); g.stroke(); }
       else if (p.type === 'measure') this.measure(g, th, p.pts[0], p.pts[1] || cur, false);
       else { g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); }
@@ -289,13 +294,15 @@ export class Chart {
       tag(yE, `${t.dir.toUpperCase()} ${open ? 'open' : 'waiting'} ${fmtP(t.entry, this.dec)}${R != null ? ' · ' + (R >= 0 ? '+' : '') + R.toFixed(2) + 'R' : ''}`, th.blue); tag(yS, 'SL ' + fmtP(t.sl, this.dec), th.dn); tag(yT, 'TP ' + fmtP(t.tp, this.dec), th.up);
     }
   }
-  hit(x, y) { // find drawing near point
-    let best = null, bd = 9;
+  handlePts(d) { if (d.type === 'hline') { const q = this.P(d.pts[0]); return [{ x: Math.min(Math.max(q.x, 24), this.plotW - 24), y: q.y }]; } return d.pts.slice(0, d.type === 'text' ? 1 : 99).map(q => this.P(q)); }
+  hit(x, y, tol = 9) { // find drawing near point
+    let best = null, bd = tol;
     for (const d of this.app.drawingsFor()) {
       const ps = d.pts.map(p => this.P(p)); let dist = Infinity;
       if (d.type === 'hline') dist = Math.abs(y - ps[0].y);
       else if (d.type === 'text') dist = Math.hypot(x - ps[0].x - 20, y - ps[0].y + 5) * .6;
       else if (d.type === 'brush') for (const q of ps) dist = Math.min(dist, Math.hypot(x - q.x, y - q.y));
+      else if (DR.has(d.type)) dist = DR.dist(this, d, x, y);
       else if (ps.length > 1) {
         const [a, b] = ps; if (d.type === 'trend') { const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy || 1; let t = ((x - a.x) * dx + (y - a.y) * dy) / l2; t = Math.max(0, Math.min(1, t)); dist = Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy)); }
         else { const inx = x >= Math.min(a.x, b.x) - 4 && x <= Math.max(a.x, b.x) + 4, iny = y >= Math.min(a.y, b.y) - 4 && y <= Math.max(a.y, b.y) + 4; dist = inx && iny ? 0 : Infinity; }
@@ -312,6 +319,7 @@ export class Chart {
       cv.setPointerCapture(e.pointerId); const p = pos(e); ptrs.set(e.pointerId, p); moved = false;
       if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), bw: this.view.barW }; drag = null; return; }
       const tool = this.app.state.tool;
+      if (tool === 'cursor' && p.x <= this.plotW && this.app.selDraw) { const sd = this.app.drawingsFor().find(d => d.id === this.app.selDraw); if (sd && sd.type !== 'brush') { const hp = this.handlePts(sd); let hi = -1, hd = 20; hp.forEach((q, i) => { const dd = Math.hypot(q.x - p.x, q.y - p.y); if (dd < hd) { hd = dd; hi = i; } }); if (hi >= 0) { drag = { mode: 'handle', d: sd, i: hi }; return; } const h = this.hit(p.x, p.y, 16); if (h && h.id === sd.id) { drag = { mode: 'move', d: sd, x: p.x, y: p.y, orig: sd.pts.map(q => ({ ...q })), i0: this.iOf(p.x), p0: this.pOf(p.y) }; return; } } }
       if (p.x > this.plotW) { drag = { mode: 'axis', y: p.y, yz: this.view.yz }; return; }
       if (tool !== 'cursor' && p.y < (this.lay?.mainH || 0)) { this.app.toolDown(p, this.snap(p)); return; }
       drag = { mode: 'pan', x: p.x, right: this.view.right, y: p.y, yc: this.view.yc };
@@ -320,6 +328,12 @@ export class Chart {
       const p = pos(e); this.mouse = e.pointerType === 'touch' && !ptrs.size ? null : p; if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, p);
       if (pinch && ptrs.size === 2) { const [a, b] = [...ptrs.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y); this.view.barW = Math.min(120, Math.max(2, pinch.bw * d / pinch.d)); this.invalidate(); return; }
       if (this.app.state.tool !== 'cursor' && !drag) { this.app.toolMove(p, this.snap(p)); this.invalidate(); return; }
+      if (drag && (drag.mode === 'handle' || drag.mode === 'move')) {
+        moved = true; const d = drag.d;
+        if (drag.mode === 'handle') { const s = this.snap(p); d.pts[drag.i] = d.type === 'hline' ? { t: d.pts[0].t, p: s.p } : s; }
+        else { const di = this.iOf(p.x) - drag.i0, dp = this.pOf(p.y) - drag.p0; d.pts = drag.orig.map(q => ({ t: d.type === 'hline' ? q.t : this.tOfIdx(Math.round(this.idxOfT(q.t) + di)), p: q.p + dp })); }
+        this.invalidate(); return;
+      }
       if (drag) {
         if (Math.abs(p.x - drag.x) + Math.abs(p.y - (drag.y ?? 0)) > 3) moved = true;
         if (drag.mode === 'axis') { this.view.yz = Math.min(20, Math.max(.05, drag.yz * Math.exp((p.y - drag.y) / 180))); }
@@ -328,7 +342,7 @@ export class Chart {
       }
       this.invalidate();
     });
-    const up = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (drag && !moved && drag.mode === 'pan' && this.app.state.tool === 'cursor') { const p = pos(e); if (this.app.state.beginner !== false && p.x <= this.plotW && this.labels) { let lb = null, ld = 1e9; for (const l of this.labels) { if (!l.txt) continue; const dx = p.x < l.x ? l.x - p.x : p.x > l.x + l.w ? p.x - l.x - l.w : 0, dy = p.y < l.y - 11 ? l.y - 11 - p.y : p.y > l.y + 3 ? p.y - l.y - 3 : 0, d = Math.hypot(dx, dy); if (d <= 9 && d < ld) { ld = d; lb = l; } } if (lb && this.app.explain) { this.selLbl = { txt: lb.txt, x: lb.x, y: lb.y, w: lb.w }; this.invalidate(); this.app.explain(lb.txt); drag = null; this.app.toolUp?.(); return; } } if (this.app.state.ind.bubbles && this.bubHits) { let best = null, bd = 1e9; for (const h of this.bubHits) { const d = Math.hypot(h.x - p.x, h.y - p.y); if (d <= h.r + 10 && (!best || h.b.q > best.b.q)) { bd = d; best = h; } } this.selBub = best ? best.b.id : null; this.invalidate(); } this.app.selDraw = this.hit(p.x, p.y)?.id || null; } if (this.app.state.tool !== 'cursor' && !moved) { } drag = null; if (e.pointerType === 'touch') this.mouse = null; this.app.toolUp?.(); this.invalidate(); };
+    const up = e => { if (drag && (drag.mode === 'handle' || drag.mode === 'move') && moved) this.app.save(); ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (drag && !moved && drag.mode === 'pan' && this.app.state.tool === 'cursor') { const p = pos(e); if (this.app.state.beginner !== false && p.x <= this.plotW && this.labels) { let lb = null, ld = 1e9; for (const l of this.labels) { if (!l.txt) continue; const dx = p.x < l.x ? l.x - p.x : p.x > l.x + l.w ? p.x - l.x - l.w : 0, dy = p.y < l.y - 11 ? l.y - 11 - p.y : p.y > l.y + 3 ? p.y - l.y - 3 : 0, d = Math.hypot(dx, dy); if (d <= 9 && d < ld) { ld = d; lb = l; } } if (lb && this.app.explain) { this.selLbl = { txt: lb.txt, x: lb.x, y: lb.y, w: lb.w }; this.invalidate(); this.app.explain(lb.txt); drag = null; this.app.toolUp?.(); return; } } if (this.app.state.ind.bubbles && this.bubHits) { let best = null, bd = 1e9; for (const h of this.bubHits) { const d = Math.hypot(h.x - p.x, h.y - p.y); if (d <= h.r + 10 && (!best || h.b.q > best.b.q)) { bd = d; best = h; } } this.selBub = best ? best.b.id : null; this.invalidate(); } this.app.selDraw = this.hit(p.x, p.y)?.id || null; } if (this.app.state.tool !== 'cursor' && !moved) { } drag = null; if (e.pointerType === 'touch') this.mouse = null; this.app.toolUp?.(); this.invalidate(); };
     cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
     cv.addEventListener('pointerleave', () => { if (!drag) { this.mouse = null; this.app.updateLegend(null); this.invalidate(); } });
     cv.addEventListener('dblclick', e => { const p = pos(e); if (p.x > this.plotW) { this.view.yz = 1; this.view.yc = 0; this.invalidate(); } else this.resetView(); });

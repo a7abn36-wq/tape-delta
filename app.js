@@ -17,6 +17,7 @@ import { validate, step as tradeStep, closeManual, toR, riskDist, stats as trade
 import { setFx, Chart, decimals } from './chart.js';
 import { explainHTML, match as learnMatch } from './learn.js';
 import { Bookmap } from './bookmap.js';
+import * as DR from './draw.js';
 
 const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
@@ -563,7 +564,15 @@ class App {
   beep() { try { const a = new (window.AudioContext || window.webkitAudioContext)(); const o = a.createOscillator(), g = a.createGain(); o.connect(g); g.connect(a.destination); o.frequency.value = 880; g.gain.value = .08; o.start(); setTimeout(() => { o.stop(); a.close(); }, 260); } catch {} }
   // ---------- drawings ----------
   drawingsFor() { return this.state.drawings[this.state.symbol] || []; }
-  addDrawing(d) { (this.state.drawings[this.state.symbol] ||= []).push({ id: uid(), color: '#e6b84a', ...d }); this.save(); this.chart.invalidate(); }
+  addDrawing(d) { const o = { id: uid(), color: '#e6b84a', ...d }; (this.state.drawings[this.state.symbol] ||= []).push(o); this.selDraw = o.id; this.save(); this.chart.invalidate(); return o; }
+  syncDrawBar() {
+    const bar = $('#drawBar'); if (!bar) return; const id = this.selDraw, d = id && this.drawingsFor().find(x => x.id === id); const key = d ? id + (d.color || '') + (d.w || '') : ''; if (key === this._bar) return; this._bar = key;
+    if (!d) { bar.hidden = true; return; } const ar = isAr();
+    bar.hidden = false; bar.innerHTML = ['#e6b84a', '#26a69a', '#ef5350', '#4c8dff', '#b58cff', '#ffffff'].map(c => `<button class="dc${(d.color || '#e6b84a') === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="colour"></button>`).join('') + `<button data-a="w" title="thickness">━</button><button data-a="dup" title="duplicate">⧉</button><button data-a="del" title="delete">🗑</button><button data-a="x" title="close">✕</button>`;
+    bar.onclick = e => { const b = e.target.closest('button'); if (!b) return; e.stopPropagation(); const cur = this.drawingsFor().find(x => x.id === this.selDraw); if (!cur) return;
+      if (b.dataset.c) { cur.color = b.dataset.c; this.save(); } else if (b.dataset.a === 'w') { cur.w = cur.w >= 3 ? 1 : (cur.w || 1.6) + 1; this.save(); } else if (b.dataset.a === 'dup') { const n = JSON.parse(JSON.stringify(cur)); n.id = uid(); n.pts = n.pts.map(q => ({ t: q.t + 8 * this.tfMs(), p: q.p })); this.state.drawings[this.state.symbol].push(n); this.selDraw = n.id; this.save(); } else if (b.dataset.a === 'del') { this.removeDrawing(cur.id); } else if (b.dataset.a === 'x') { this.selDraw = null; }
+      this._bar = null; this.chart.invalidate(); };
+  }
   removeDrawing(id) { const l = this.state.drawings[this.state.symbol] || []; this.state.drawings[this.state.symbol] = l.filter(d => d.id !== id); this.selDraw = null; this.save(); this.chart.invalidate(); }
   setTool(t) { this.state.tool = t; this.chart.pending = null; this.chart.brushing = false; this.renderTools(); this.chart.cv.style.cursor = t === 'cursor' ? 'default' : 'crosshair'; this.chart.invalidate(); }
   toolDown(px, s) {
@@ -573,6 +582,10 @@ class App {
     else if (t === 'text') { this.askText(px, s); }
     else if (t === 'eraser') { const h = ch.hit(px.x, px.y); if (h) this.removeDrawing(h.id); }
     else if (t === 'brush') { ch.pending = { type: 'brush', pts: [s] }; ch.brushing = true; }
+    else if (DR.has(t)) {
+      const n = DR.DEFS[t].n; if (!ch.pending) ch.pending = { type: t, pts: [s] }; else ch.pending.pts.push(s);
+      if (ch.pending.pts.length >= n) { this.addDrawing({ type: t, pts: ch.pending.pts.slice(0, n) }); ch.pending = null; this.setTool('cursor'); } else this.toast((isAr() ? 'نقطة ' : 'Point ') + (ch.pending.pts.length + 1) + (isAr() ? ' من ' : ' of ') + n, 2200);
+    }
     else if (['trend', 'rect', 'measure'].includes(t)) {
       if (!ch.pending) ch.pending = { type: t, pts: [s] }; else { const p = ch.pending; p.pts[1] = s; this.addDrawing({ type: p.type, pts: p.pts.slice() }); ch.pending = null; this.setTool('cursor'); }
     }
@@ -585,7 +598,7 @@ class App {
   toolUp() {
     const ch = this.chart, t = this.state.tool;
     if (ch.brushing && ch.pending) { if (ch.pending.pts.length > 1) this.addDrawing({ type: 'brush', pts: ch.pending.pts }); ch.pending = null; ch.brushing = false; this.setTool('cursor'); return; }
-    if (ch.pending && ch.pending.pts.length === 1 && this.downPx && this.lastPx && Math.hypot(this.lastPx.x - this.downPx.x, this.lastPx.y - this.downPx.y) > 14) { const p = ch.pending; p.pts[1] = ch.snap(this.lastPx); this.addDrawing({ type: p.type, pts: p.pts.slice() }); ch.pending = null; this.setTool('cursor'); }
+    if (ch.pending && ch.pending.pts.length === 1 && this.downPx && this.lastPx && Math.hypot(this.lastPx.x - this.downPx.x, this.lastPx.y - this.downPx.y) > 14) { const p = ch.pending, n = DR.has(p.type) ? DR.DEFS[p.type].n : 2; p.pts[1] = ch.snap(this.lastPx); if (n === 2) { this.addDrawing({ type: p.type, pts: p.pts.slice() }); ch.pending = null; this.setTool('cursor'); } else this.toast((isAr() ? 'نقطة 3 من ' : 'Point 3 of ') + n, 2200); }
     this.downPx = null;
   }
   askText(px, s) {
@@ -713,7 +726,7 @@ class App {
   }
   renderTf() { document.querySelectorAll('#tfs button').forEach(b => b.classList.toggle('on', b.dataset.tf === this.state.tf)); }
   renderTools() {
-    const T = [['cursor', '⌖', 'Cursor'], ['avwap', 'A', 'Anchored VWAP: tap a candle'], ['hline', '―', 'Horizontal line'], ['trend', '╱', 'Trend line'], ['rect', '▭', 'Rectangle'], ['text', 'T', 'Text'], ['brush', '✎', 'Brush'], ['measure', '↔', 'Measure'], ['eraser', '⌫', 'Eraser'], ['clear', '🗑', 'Clear all drawings on this symbol']];
+    const T = [['cursor', '⌖', 'Cursor'], ['avwap', 'A', 'Anchored VWAP: tap a candle'], ['hline', '―', 'Horizontal line'], ['trend', '╱', 'Trend line'], ['rect', '▭', 'Rectangle'], ['fib', 'Fib', DR.DEFS.fib.name[0]], ['fibext', 'FibX', DR.DEFS.fibext.name[0]], ['text', 'T', 'Text'], ['brush', '✎', 'Brush'], ['measure', '↔', 'Measure'], ['eraser', '⌫', 'Eraser'], ['clear', '🗑', 'Clear all drawings on this symbol']];
     $('#tools').innerHTML = T.map(([id, ic, t]) => `<button data-tool="${id}" title="${t}" aria-label="${t}" class="${this.state.tool === id ? 'on' : ''}">${ic}</button>`).join('');
     $('#tools').onclick = e => { const id = e.target.closest('button')?.dataset.tool; if (!id) return; if (id === 'clear') { if (this.drawingsFor().length && confirm('Delete all drawings on ' + this.state.symbol + '?')) { this.state.drawings[this.state.symbol] = []; this.save(); this.chart.invalidate(); } return; } this.setTool(id); };
   }
