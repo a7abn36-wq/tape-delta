@@ -99,6 +99,10 @@ export class Chart {
       }
       if (z.sessions) for (const l of ict.levels) { this.hline(l.p, l.name, th.blue, [6, 3]); this.edge(l.p, l.name, th.blue); }
     }
+    const gp = app.goldLevels && app.goldLevels(); if (gp) {
+      for (const l of gp.levels) { this.hline(l.p, l.name, th.gold, [2, 4]); this.edge(l.p, l.name, th.gold); }
+      for (const e of gp.times) { const x = this.xOf(this.idxOfT(e.t)); if (x < 0 || x > this.plotW) continue; g.strokeStyle = th.gold; g.globalAlpha = .5; g.setLineDash([2, 4]); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, mh); g.stroke(); g.setLineDash([]); g.globalAlpha = 1; g.save(); g.translate(x - 3, 70); g.rotate(-Math.PI / 2); g.fillStyle = th.gold; g.font = '9px system-ui'; g.textAlign = 'left'; g.fillText(e.name, 0, 0); g.restore(); }
+    }
     this.drawings(g, th, c);
     this.alertLines(g, th); this.tradeLines(g, th);
     // last price

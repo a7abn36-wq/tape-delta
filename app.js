@@ -4,6 +4,7 @@ import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
+import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChange, corr } from './gold.js';
 import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
 import { Chart, decimals } from './chart.js';
 
@@ -11,7 +12,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = {
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -26,13 +27,13 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 class App {
   constructor() {
-    this.state = loadState(); this.candles = []; this.trades = []; this.ticks = new Map(); this.fpCache = new Map(); this.fpStep = 0; this.tickQ = []; this.tickBusy = 0; this.recon = new Map(); this.integ = { missed: 0, reloads: 0, lastAggId: null, issues: new Map(), gaps: 0, bad: 0 }; this.conf = null; this.confT = 0;
+    this.state = loadState(); this.candles = []; this.trades = []; this.ticks = new Map(); this.fpCache = new Map(); this.fpStep = 0; this.tickQ = []; this.tickBusy = 0; this.recon = new Map(); this.integ = { missed: 0, reloads: 0, lastAggId: null, issues: new Map(), gaps: 0, bad: 0 }; this.conf = null; this.confT = 0; this.gold = null; this.goldPx = {};
     this.src = null; this.ict = null; this.levels = null; this.replay = null; this.gen = 0; this.selDraw = null; this.loadMsg = 'Loading...';
     this.price = null; this.prevPrice = null; this.ticker = null; this.extras = null; this.depth = null; this.tape = []; this.loadingMore = false; this.feedStatus = 'connecting'; this.ictT = 0; this.zoneIn = {};
     this.liq = new LiqMap(() => { this.chart.invalidate(); this.renderLiq(); }); this.chart = new Chart($('#cv'), this);
     this.feed = new Feed({ status: s => this.setFeedStatus(s), kline: k => this.onKline(k), trade: t => this.onTrade(t) });
     this.buildUI(); this.applyTheme(); this.load();
-    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000);
+    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
@@ -64,7 +65,7 @@ class App {
     this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
     this.feed.open(src, symbol, tf);
     if (this.state.ind.liq) this.liq.start(src, symbol);
-    this.loadLevels(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
+    this.loadLevels(gen); this.loadGold(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
   }
   showError(symbol, e) {
     const alt = SYMBOLS.find(s => s.kinds.includes('spot'));
@@ -134,6 +135,47 @@ class App {
       for (const t of list) if (t.status !== 'closed') t.lastCheck = Math.max(t.lastCheck || 0, last);
       this.save(); this.chart.invalidate();
     } catch {}
+  }
+  isGold() { return GOLD.has(this.state.symbol); }
+  async loadGold(gen) {
+    this.gold = null; if (!this.isGold() || !this.src) return; const src = this.src, sym = this.state.symbol;
+    try {
+      const [d, h, eh, gh] = await Promise.all([fetchKlines(src, sym, '1d', 40), fetchKlines(src, sym, '1h', 50), fetchKlines(src, 'EURUSDT', '1h', 50).catch(() => null), Promise.resolve(null)]); if (gen !== this.gen) return;
+      const atr = dailyATR(d), today = d[d.length - 1]; const G = { atr, today, d1: d, asof: Date.now() };
+      if (eh) { const dayStart = Math.floor(Date.now() / 864e5) * 864e5; const e0 = eh.find(x => x.t >= dayStart) || eh[eh.length - 1]; G.e0 = e0.o;
+        const rp = [], ru = []; for (let i = 1; i < h.length; i++) { const E = eh.find(x => x.t === h[i].t), E1 = eh.find(x => x.t === h[i - 1].t); if (!E || !E1) continue; rp.push(Math.log(h[i].c / h[i - 1].c)); ru.push(-Math.log(E.c / E1.c)); }
+        G.corr = corr(rp, ru); G.corrN = rp.length; }
+      this.gold = G; this.pollGoldPx(); this.chart.invalidate(); this.renderGold();
+    } catch (e) { if (gen === this.gen) this.gold = { err: e.message }; this.renderGold(); }
+  }
+  async pollGoldPx() { if (!this.isGold() || !this.src || !this.gold || this.gold.err) return; try { const e = await fetchPrice(this.src, 'EURUSDT'); this.goldPx = { e }; this.renderGold(); } catch {} }
+  goldLevels() {
+    const G = this.gold; if (!this.isGold() || !this.state.ind.gold || !G || G.err || !G.atr) return null; const o = G.today.o, a = G.atr; const lv = [];
+    for (const k of [-1, -0.5, 0.5, 1]) lv.push({ name: `ATR ${k > 0 ? '+' : ''}${k}`, p: o + k * a });
+    return { levels: lv, times: this.tfMs() <= 3600e3 ? goldTimes(Date.now()) : [] };
+  }
+  renderGold() {
+    const el = $('#pane-gold'); if (!el || el.hidden) return; const G = this.gold; const tag = (t, x) => `<span class="tag ${t}">${t}</span> ${x}`;
+    if (!this.isGold()) { el.innerHTML = '<div class="note">The gold pack is for PAXGUSDT (gold token) and XAUUSDT (needs Futures). Pick PAXGUSDT in the symbol list.</div>'; return; }
+    if (!G) { el.innerHTML = '<div class="note">Loading gold data...</div>'; return; } if (G.err) { el.innerHTML = `<div class="note">Could not load: ${esc(G.err)}</div>`; return; }
+    const px = this.price ?? G.today.c, d = decimals(px), rng = Math.max(G.today.h, px) - Math.min(G.today.l, px), used = G.atr ? rng / G.atr * 100 : null; const now = Date.now(); const open = goldMarketOpen(now);
+    const ch = G.today.o ? (px / G.today.o - 1) * 100 : null; let usd = null; if (this.goldPx.e && G.e0) usd = -Math.log(this.goldPx.e / G.e0) * 100;
+    const times = goldTimes(now).filter(t => t.t > now - 3600e3).slice(0, 4).map(t => `<div class="kv"><span>${esc(t.name)}</span><span>${new Date(t.t).toLocaleString([], { hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit' })} · ${t.t > now ? 'in ' + (t.t - now > 36e5 ? Math.floor((t.t - now) / 36e5) + 'h ' : '') + Math.round(((t.t - now) % 36e5) / 6e4) + 'm' : 'just passed'}</span></div>`).join('');
+    const ses = sessionRanges(this.candles, this.tfMs()).map(r => `<div class="kv"><span>${r.name}${r.active ? ' (live)' : ''}</span><span>${fmt(r.lo, d)} to ${fmt(r.hi, d)} · ${fmt(r.hi - r.lo, d)}${G.atr ? ' · ' + ((r.hi - r.lo) / G.atr * 100).toFixed(0) + '% ATR' : ''}</span></div>`).join('') || '<div class="note">Session ranges need a 1h or lower timeframe.</div>';
+    el.innerHTML = `<div class="leg">${tag('PROXY', 'PAXG is a gold-backed token on a crypto exchange, not spot gold (XAU). It tracks gold closely but is a different market. Volumes, spreads and weekend moves are not the gold market.')}</div>
+    <div class="kv"><span>Gold market (NY time)</span><span class="${open ? 'u' : 'd'}">${open ? 'open' : 'closed (weekend): PAXG moves are crypto-only'}</span></div>
+    <div class="grp">Daily range vs ATR(14)</div>
+    <div class="kv"><span>Daily ATR(14)</span><span>${G.atr ? fmt(G.atr, d) : 'n/a'}</span></div>
+    <div class="kv"><span>Today so far (UTC day)</span><span>${fmt(rng, d)}${used != null ? ' · ' + used.toFixed(0) + '% of ATR' : ''}${ch != null ? ' · ' + (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%' : ''}</span></div>
+    ${G.atr ? `<div class="kv"><span>Day open ± 1 ATR</span><span>${fmt(G.today.o - G.atr, d)} / ${fmt(G.today.o + G.atr, d)}</span></div>` : ''}
+    <div class="grp">US dollar (proxy, not DXY)</div>
+    <div class="leg">${tag('PROXY', 'DXY is not published by Binance. This uses real EURUSDT only (EUR is 57.6% of DXY). GBPUSDT on Binance has no data since 2023, and JPY, CAD, SEK, CHF pairs do not exist there. It is the inverse of EUR/USD, a rough guide only.')}</div>
+    <div class="kv"><span>USD basket today</span><span class="${usd == null ? '' : usd >= 0 ? 'u' : 'd'}">${usd == null ? 'loading' : (usd >= 0 ? '+' : '') + usd.toFixed(2) + '%'}</span></div>
+    <div class="kv"><span>PAXG vs USD basket, hourly returns (${G.corrN || 0} h)</span><span>${G.corr != null ? G.corr.toFixed(2) : 'n/a'}</span></div>
+    <div class="note">Gold normally moves against the dollar, so a negative correlation is the usual picture. Short windows are noisy.</div>
+    <div class="grp">Sessions (New York time)</div>${ses}
+    <div class="grp">Gold reference times</div>${times}
+    <div class="note">Fix and COMEX times are scheduled events, not Binance prices. LBMA fixes are 10:30 and 15:00 London time. US holidays are not accounted for.</div>`;
   }
   planDefaults() {
     const k = this.conf; const p = this.price; if (!p) return {}; const long = k && k.label !== 'NO EDGE' ? k.dir === 'bull' : true;
@@ -441,7 +483,7 @@ class App {
     const tzb = $('#bTz'); tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; tzb.onclick = () => { this.state.tz = this.state.tz === 'UTC' ? 'local' : 'UTC'; tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; this.save(); this.chart.invalidate(); };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
     this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('data'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
@@ -460,7 +502,7 @@ class App {
     const intraday = TFS[s.tf] <= 3600e3; const n = k => s.ind.ict && cnt[k] !== undefined ? (cnt[k] ? cnt[k] + ' in range' : 'none in range') : '';
     $('#sheetT').textContent = 'Indicators'; $('#sheetB').innerHTML =
       `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'scvd', 'Session CVD (resets Asia / London / NY)', intraday ? '' : 'needs 1h or lower', !intraday)}${chk('ind', 'cvd', 'CVD (from first loaded bar)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
-      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}
+      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
