@@ -28,7 +28,7 @@ export class LiqMap {
       await new Promise(r => setTimeout(r, 600));
       const lim = this.lim || (this.src.key === 'spot' ? 5000 : 1000);
       const r = await fetch(`${this.src.rest}/depth?symbol=${this.sym}&limit=${lim}`); if (!r.ok) throw new Error('HTTP ' + r.status); const d = await r.json(); if (g !== this.gen) return;
-      this.bids = new Map(d.bids.map(x => [+x[0], +x[1]])); this.asks = new Map(d.asks.map(x => [+x[0], +x[1]])); this.lastU = d.lastUpdateId;
+      this.edge = { lo: Math.min(...d.bids.map(x => +x[0])), hi: Math.max(...d.asks.map(x => +x[0])) }; this.bids = new Map(d.bids.map(x => [+x[0], +x[1]])); this.asks = new Map(d.asks.map(x => [+x[0], +x[1]])); this.lastU = d.lastUpdateId;
       const pend = this.buf; this.buf = []; this.first = true; this.ready = true; this.status = 'live'; if (!this.since) this.since = Date.now();
       for (const m of pend) this.onDiff(m, g);
     } catch (e) { if (g !== this.gen) return; this.status = 'error'; this.err = e.message; this.cb(); this.timer = setTimeout(() => { if (g === this.gen) this.sync(g); }, 8000); }
@@ -45,7 +45,7 @@ export class LiqMap {
   }
   startRest(src, sym, limit = 500) { // REST-only fallback: full book every 2 s, no diff stream
     this.stop(); this.src = src; this.sym = sym; const g = this.gen; this.mode = 'rest'; this.status = 'connecting'; this.cb();
-    const tick = async () => { try { const r = await fetch(`${src.rest}/depth?symbol=${sym}&limit=${limit}`); if (!r.ok) throw new Error('HTTP ' + r.status); const d = await r.json(); if (g !== this.gen) return; this.bids = new Map(d.bids.map(x => [+x[0], +x[1]])); this.asks = new Map(d.asks.map(x => [+x[0], +x[1]])); this.ready = true; if (!this.since) this.since = Date.now(); this.snapshot(); } catch (e) { if (g !== this.gen) return; this.status = 'error'; this.err = e.message; this.cb(); } };
+    const tick = async () => { try { const r = await fetch(`${src.rest}/depth?symbol=${sym}&limit=${limit}`); if (!r.ok) throw new Error('HTTP ' + r.status); const d = await r.json(); if (g !== this.gen) return; this.edge = { lo: Math.min(...d.bids.map(x => +x[0])), hi: Math.max(...d.asks.map(x => +x[0])) }; this.bids = new Map(d.bids.map(x => [+x[0], +x[1]])); this.asks = new Map(d.asks.map(x => [+x[0], +x[1]])); this.ready = true; if (!this.since) this.since = Date.now(); this.snapshot(); } catch (e) { if (g !== this.gen) return; this.status = 'error'; this.err = e.message; this.cb(); } };
     tick(); this.snapT = setInterval(tick, 2000);
   }
   resync(g) { this.resyncs++; this.ready = false; this.buf = []; this.sync(g); }
@@ -56,7 +56,7 @@ export class LiqMap {
     if (!this.bin) this.bin = nice(mid * 0.00004); const bin = this.bin;
     const R = mid * 0.03; const agg = m => { const o = new Map(); for (const [p, q] of m) { if (Math.abs(p - mid) > R) continue; const k = Math.floor(p / bin); o.set(k, (o.get(k) || 0) + q); } return o; };
     const B = agg(this.bids), A = agg(this.asks);
-    const N = this.lim || 500; const bp = [...this.bids.keys()].sort((x, y) => y - x).slice(0, N), ap = [...this.asks.keys()].sort((x, y) => x - y).slice(0, N); const lo = bp[bp.length - 1], hi = ap[ap.length - 1];
+    const lo = this.edge ? this.edge.lo : mid, hi = this.edge ? this.edge.hi : mid; // coverage = edges of the last full snapshot (levels beyond are only partly known)
     this.cover = { lo, hi, loPct: (mid - lo) / mid * 100, hiPct: (hi - mid) / mid * 100 };
     const near = [...B, ...A].filter(([k]) => Math.abs((k + 0.5) * bin - mid) <= mid * 0.015).map(x => x[1]).sort((x, y) => x - y); const med = near[near.length >> 1] || 0, p97 = near[Math.floor(near.length * 0.97)] || 0; const p99 = near[Math.floor(near.length * 0.99)] || 0; const big = Math.max(med * 10, p99, 1e-9);
     // wall tracking

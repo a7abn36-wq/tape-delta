@@ -20,6 +20,7 @@ const T = {
   keyBid: ['resting BUY orders', 'أوامر شراء واقفة'], keyAsk: ['resting SELL orders', 'أوامر بيع واقفة'], keyBuy: ['market buy trade', 'صفقة شراء بالسوق'], keySell: ['market sell trade', 'صفقة بيع بالسوق'], keyLine: ['mid price', 'سعر المنتصف'], keyInt: ['darker = bigger size', 'أغمق = حجم أكبر'],
   real: ['REAL: Binance Spot book, this exchange only', 'حقيقي: دفتر Binance Spot، البورصة دي بس'], partial: ['PARTIAL: only a band around price', 'جزئي: نطاق حوالين السعر بس'], tradesReal: ['REAL: actual trades', 'حقيقي: صفقات فعلية'],
   empty: ['Recording just started. The map fills in every 2 seconds. There is no history before you opened this page.', 'التسجيل لسه بادي. الخريطة بتتملي كل ثانيتين. مفيش تاريخ قبل ما فتحت الصفحة.'],
+  keyEv: ['events P/C/A/X (inference)', 'أحداث P/C/A/X (استنتاج)'],
   cvdT: ['CVD (net market buying since recording)', 'CVD (صافي الشراء بالسوق من بداية التسجيل)'],
   tapHint: ['Tap the map, a bubble or a key item for an explanation.', 'اضغط على الخريطة أو فقاعة أو عنصر في المفتاح للشرح.']
 };
@@ -45,7 +46,7 @@ export class Bookmap {
   _ctl() { this.el.querySelectorAll('[data-wm]').forEach(b => b.classList.toggle('on', +b.dataset.wm === this.wm)); this.el.querySelectorAll('[data-rp]').forEach(b => b.classList.toggle('on', +b.dataset.rp === this.rp)); }
   _labels() {
     const ar = isAr(); $('#bmT').textContent = this.L('title'); $('#bmX').textContent = this.L('close');
-    $('#bmKey').innerHTML = `<button class="bmk" data-key="bid"><i style="background:#26e6a0"></i>${this.L('keyBid')}</button><button class="bmk" data-key="ask"><i style="background:#ff5a44"></i>${this.L('keyAsk')}</button><button class="bmk" data-key="buy"><i class="ring" style="border-color:#26e6a0"></i>${this.L('keyBuy')}</button><button class="bmk" data-key="sell"><i class="ring" style="border-color:#ff5a44"></i>${this.L('keySell')}</button><button class="bmk" data-key="line"><i style="background:#e8f1ff;height:2px"></i>${this.L('keyLine')}</button><button class="bmk" data-key="int"><i class="grad"></i>${this.L('keyInt')}</button>`;
+    $('#bmKey').innerHTML = `<button class="bmk" data-key="bid"><i style="background:#26e6a0"></i>${this.L('keyBid')}</button><button class="bmk" data-key="ask"><i style="background:#ff5a44"></i>${this.L('keyAsk')}</button><button class="bmk" data-key="buy"><i class="ring" style="border-color:#26e6a0"></i>${this.L('keyBuy')}</button><button class="bmk" data-key="sell"><i class="ring" style="border-color:#ff5a44"></i>${this.L('keySell')}</button><button class="bmk" data-key="line"><i style="background:#e8f1ff;height:2px"></i>${this.L('keyLine')}</button><button class="bmk" data-key="int"><i class="grad"></i>${this.L('keyInt')}</button><button class="bmk" data-key="ev"><i style="background:#f2c14e"></i>${this.L('keyEv')}</button>`;
     $('#bmKey').querySelectorAll('[data-key]').forEach(b => b.onclick = () => this.explain(b.dataset.key));
     $('#bmLbl').innerHTML = `<span class="bmc ok">${this.L('real')}</span><span class="bmc part">${this.L('partial')}</span><span class="bmc ok">${this.L('tradesReal')}</span>`;
     $('#bmHint').textContent = this.L('tapHint'); this.el.dir = ar ? 'rtl' : 'ltr';
@@ -89,6 +90,24 @@ export class Bookmap {
     tick(); this._tt = setInterval(() => { if (g !== this.tgen || this.tmode !== 'rest') { clearInterval(this._tt); return; } tick(); }, 2000);
   }
   _stopTrades() { this.tgen = (this.tgen || 0) + 1; clearInterval(this._tt); try { this.ws2 && this.ws2.close(); } catch { } this.ws2 = null; }
+
+  _events() {
+    const lm = this.lm; if (!lm) return []; const S = lm.snaps, bin = lm.bin, out = [];
+    for (const e of lm.events || []) {
+      let cls = e.kind === 'pulled' ? 'P' : e.kind === 'cancelled' ? 'C' : 'F';
+      if (cls === 'F') { const after = S.filter(x => x.t > e.t && x.t <= e.t + 40000); if (!after.length || S[S.length - 1].t < e.t + 15000) cls = 'H'; else { const held = after.every(x => e.side === 'b' ? x.mid >= e.p - 2 * bin : x.mid <= e.p + 2 * bin); cls = held ? 'A' : 'X'; } }
+      out.push({ ...e, cls });
+    }
+    return out;
+  }
+  _div() {
+    const lm = this.lm; if (!lm || !lm.snaps.length) return null; const now = Date.now(), t0 = now - 5 * 60e3;
+    const cv = this.cvd.filter(x => x[0] >= t0), ms = lm.snaps.filter(x => x.t >= t0); if (cv.length < 60 || ms.length < 60 || cv[cv.length - 1][0] - cv[0][0] < 150e3) return null;
+    const ps = ms.map(x => x.mid), pmax = Math.max(...ps), pmin = Math.min(...ps), pl = ps[ps.length - 1], cs = cv.map(x => x[1]), cmax = Math.max(...cs), cmin = Math.min(...cs), cl = cs[cs.length - 1], rng = cmax - cmin; if (rng <= 0) return null;
+    if (pl >= pmax * 0.9998 && cl <= cmax - 0.4 * rng) return { dir: 'bear', pl, pmax, cl, cmax };
+    if (pl <= pmin * 1.0002 && cl >= cmin + 0.4 * rng) return { dir: 'bull', pl, pmin, cl, cmin };
+    return null;
+  }
   /* ---------- drawing ---------- */
   geom() { const W = this.W, H = this.H, axisH = 16, cvdH = Math.round(H * 0.17), heatH = H - cvdH - axisH - 4; return { W, H, axisH, cvdH, heatH, plotW: W - 54 }; }
   draw() {
@@ -114,6 +133,10 @@ export class Bookmap {
     const tr = this.trades.filter(x => x.t >= tS && x.p >= lo && x.p <= hi); let thr = 0, qmax = 0;
     if (tr.length) { const qs = tr.map(x => x.q).sort((a, b) => a - b); thr = tr.length >= 20 ? qs[Math.floor(qs.length * 0.9)] : 0; qmax = qs[qs.length - 1]; }
     for (const x of tr) { if (x.q < thr) continue; const px = X(x.t), py = Y(x.p), r = 3 + 11 * Math.sqrt(x.q / (qmax || 1)); const c = x.buy ? '38,230,160' : '255,90,68'; g.fillStyle = `rgba(${c},.28)`; g.strokeStyle = `rgba(${c},.95)`; g.lineWidth = 1.2; g.beginPath(); g.arc(px, py, r, 0, 7); g.fill(); g.stroke(); this.hits.push({ x: px, y: py, r, tr: x }); }
+    // events (inference markers)
+    this._evs = this._events(); const EC = { P: '#f2c14e', C: '#8fa3c0', A: '#7ee0ff', X: '#ff8fd0', H: '#7ee0ff' };
+    g.font = 'bold 9px system-ui'; g.textAlign = 'center';
+    for (const e of this._evs) { if (e.t < tS || e.p < lo || e.p > hi) continue; const px = X(e.t), py = Y(e.p); g.fillStyle = '#080b12cc'; g.strokeStyle = EC[e.cls]; g.lineWidth = 1.3; g.beginPath(); g.roundRect ? g.roundRect(px - 7, py - 7, 14, 14, 3) : g.rect(px - 7, py - 7, 14, 14); g.fill(); g.stroke(); g.fillStyle = EC[e.cls]; g.fillText(e.cls === 'H' ? 'A?' : e.cls, px, py + 3); this.hits.push({ x: px, y: py, r: 9, ev: e }); }
     g.restore();
     // price axis
     g.fillStyle = '#a9bbd6'; g.font = '10px ui-monospace,Menlo,monospace'; g.textAlign = 'left'; const d = decs(mid);
@@ -122,6 +145,7 @@ export class Bookmap {
     // CVD pane
     const cy0 = heatH + 4; g.fillStyle = '#0c1018'; g.fillRect(0, cy0, plotW, cvdH); g.fillStyle = '#a9bbd6'; g.font = '10px system-ui'; g.textAlign = 'left'; g.fillText(this.L('cvdT'), 4, cy0 + 11);
     const cv = this.cvd.filter(x => x[0] >= tS - 2000); if (cv.length > 1) { let mn = Infinity, mx = -Infinity; for (const x of cv) { if (x[1] < mn) mn = x[1]; if (x[1] > mx) mx = x[1]; } if (mx - mn < 1e-9) mx = mn + 1e-9; g.strokeStyle = '#f2c14e'; g.lineWidth = 1.4; g.beginPath(); cv.forEach((x, i) => { const px = X(x[0]), py = cy0 + cvdH - 4 - (x[1] - mn) / (mx - mn) * (cvdH - 20); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); g.textAlign = 'left'; g.fillStyle = '#f2c14e'; g.fillText((this.cum >= 0 ? '+' : '') + fmt(this.cum, 3), plotW + 3, cy0 + 12); }
+    { const dv = this._div(); if (dv) { g.fillStyle = dv.dir === 'bear' ? '#ff8a7a' : '#6af0b8'; g.textAlign = 'right'; g.font = 'bold 10px system-ui'; g.fillText((isAr() ? 'تباعد CVD (استنتاج): ' : 'CVD divergence (inferred): ') + (dv.dir === 'bear' ? (isAr() ? 'السعر عند قمة والشراء ضعيف' : 'price at high, buying weak') : (isAr() ? 'السعر عند قاع والبيع ضعيف' : 'price at low, selling weak')), plotW - 4, cy0 + 11); } }
     // time axis
     g.fillStyle = '#a9bbd6'; g.textAlign = 'center'; g.font = '10px system-ui'; const ty = heatH + 4 + cvdH + 11; for (let i = 0; i <= 4; i++) { const t = tS + wMs * i / 4; g.fillText(clock(t), Math.min(plotW - 22, Math.max(22, X(t))), ty); }
   }
@@ -142,12 +166,14 @@ export class Bookmap {
     if (wb) out.push(ar ? `أكبر جدار شراء قريب: ${fmt(wb.q, 3)} ${coin} (≈ $${fmt(wb.q * wb.p)}) عند ${fmt(wb.p, decs(mid))}، تحت السعر بـ${((mid - wb.p) / mid * 100).toFixed(2)}%.` : `Largest nearby buy wall: ${fmt(wb.q, 3)} ${coin} (about $${fmt(wb.q * wb.p)}) at ${fmt(wb.p, decs(mid))}, ${((mid - wb.p) / mid * 100).toFixed(2)}% below price.`);
     if (wa) out.push(ar ? `أكبر جدار بيع قريب: ${fmt(wa.q, 3)} ${coin} (≈ $${fmt(wa.q * wa.p)}) عند ${fmt(wa.p, decs(mid))}، فوق السعر بـ${((wa.p - mid) / mid * 100).toFixed(2)}%.` : `Largest nearby sell wall: ${fmt(wa.q, 3)} ${coin} (about $${fmt(wa.q * wa.p)}) at ${fmt(wa.p, decs(mid))}, ${((wa.p - mid) / mid * 100).toFixed(2)}% above price.`);
     const t60 = this.trades.filter(x => x.t >= Date.now() - 60e3); if (t60.length >= 5) { const b = t60.filter(x => x.buy).reduce((a, x) => a + x.q, 0), sl = t60.reduce((a, x) => a + x.q, 0) - b, pb = Math.round(b / (b + sl) * 100); out.push(ar ? `آخر دقيقة: الشراء بالسوق ${pb}% والبيع بالسوق ${100 - pb}% (${t60.length} صفقة).` : `Last minute: market buying ${pb}%, market selling ${100 - pb}% (${t60.length} trades).`); }
+    { const dv = this._div(); if (dv) out.push(ar ? (dv.dir === 'bear' ? 'تباعد CVD (استنتاج مش مؤكد): السعر عند أعلى مستوى في آخر 5 دقايق لكن صافي الشراء بالسوق أضعف من قمته.' : 'تباعد CVD (استنتاج مش مؤكد): السعر عند أدنى مستوى في آخر 5 دقايق لكن صافي البيع بالسوق أضعف من قاعه.') : (dv.dir === 'bear' ? 'CVD divergence (inference, unconfirmed): price is at its 5-minute high but net market buying is below its own peak.' : 'CVD divergence (inference, unconfirmed): price is at its 5-minute low but net market selling is below its own low.')); }
+    { const ev = (this._evs || []).slice(-3).reverse(); const nm = { P: ['wall pulled near price', 'جدار اتسحب قريب من السعر'], C: ['wall cancelled', 'جدار اتلغى'], A: ['wall absorbed (traded into, price held)', 'جدار اتمتص (اتضرب والسعر ثبت)'], X: ['wall broken (traded into, price went through)', 'جدار اتكسر (اتضرب والسعر عدّى)'], H: ['wall being hit (outcome pending)', 'جدار بيتضرب (النتيجة لسه)'] }; for (const e of ev) out.push((ar ? 'حدث (استنتاج): ' : 'Event (inference): ') + nm[e.cls][ar ? 1 : 0] + ` — ${e.side === 'b' ? (ar ? 'شراء' : 'buy') : (ar ? 'بيع' : 'sell')} ${fmt(e.qty, 3)} ${coin} @ ${fmt(e.p, decs(mid))}, ${clock(e.t)}`); }
     el.innerHTML = out.map(x => `<div>${esc(x)}</div>`).join('') + `<div class="bmnote">${ar ? 'دي وصف للي ظاهر دلوقتي، مش توقع ومش نصيحة. الأوامر الواقفة ممكن تتسحب في أي لحظة.' : 'These describe what is on screen now. They are not predictions or advice. Resting orders can be pulled at any moment.'}</div>`;
   }
   /* ---------- tap to explain ---------- */
   tap(x, y) {
     if (!this.v) return; let best = null, bd = 1e9; for (const h of this.hits) { const d = Math.hypot(h.x - x, h.y - y); if (d <= h.r + 8 && d < bd) { bd = d; best = h; } }
-    if (best) { this.explain('trade', best.tr); return; }
+    if (best && best.ev) { this.explain('event', best.ev); return; } if (best) { this.explain('trade', best.tr); return; }
     const v = this.v; if (x > v.plotW || y > v.heatH) return; const t = v.tS + x / v.plotW * v.wMs, p = v.hi - y / v.heatH * (v.hi - v.lo); let s = null, sd = 1e9; for (const q of v.S) { const d = Math.abs(q.t - t); if (d < sd) { sd = d; s = q; } } if (!s || sd > 6000) { this.explain('empty'); return; }
     const k = Math.floor(p / v.bin); const b = s.B.find(a => a[0] === k), a = s.A.find(a => a[0] === k); this.explain('cell', { p: (k + .5) * v.bin, t: s.t, b: b ? b[1] : 0, a: a ? a[1] : 0, mid: s.mid, bin: v.bin });
   }
@@ -163,9 +189,13 @@ export class Bookmap {
       const x = o, d = decs(x.p); title = ar ? 'فقاعة صفقة' : 'Trade bubble';
       html = row(ar ? 'إيه اللي بتشوفه؟' : 'What you are looking at', ar ? `صفقة حقيقية الساعة ${clock(x.t)}: ${x.buy ? 'شراء بالسوق' : 'بيع بالسوق'} حجم ${fmt(x.q, 4)} ${coin} (≈ $${fmt(x.q * x.p)}) بسعر ${fmt(x.p, d)}.` : `A real trade at ${clock(x.t)}: market ${x.buy ? 'buy' : 'sell'} of ${fmt(x.q, 4)} ${coin} (about $${fmt(x.q * x.p)}) at ${fmt(x.p, d)}.`) +
         row(ar ? 'أقراها إزاي؟' : 'How to read it', ar ? 'بنعرض بس أكبر 10% من الصفقات في النافذة (لو فيه 20 صفقة على الأقل). الفقاعة الأكبر = صفقة أكبر. الأخضر = مشتري ضرب السوق، الأحمر = بائع ضرب السوق.' : 'Only the largest 10% of trades in the window are shown (once there are at least 20). Bigger bubble = bigger trade. Green = a buyer hit the market, red = a seller hit the market.') + caution(ar ? 'ده من Binance Spot بس مش السوق كله. الصفقة الكبيرة لوحدها مش دليل اتجاه.' : 'Binance Spot only, not the whole market. One big trade alone is not evidence of direction.');
+    } else if (kind === 'event') {
+      const e = o, d = decs(e.p), side = e.side === 'b' ? (ar ? 'شراء' : 'buy') : (ar ? 'بيع' : 'sell'); const M = { P: [ar ? 'جدار اتسحب' : 'Wall pulled', ar ? 'جدار كبير اختفى من الدفتر وهو قريب من السعر ومن غير ما الصفقات تاكله. الأرجح إنه اتلغى. ده استنتاج من الدفتر مش مؤكد.' : 'A large wall vanished from the book near price without trades eating it. Most likely cancelled. This is an inference from the book, not confirmed.'], C: [ar ? 'جدار اتلغى' : 'Wall cancelled', ar ? 'جدار كبير اختفى بعيد عن السعر من غير صفقات تقابله. غالبًا اتلغى.' : 'A large wall vanished far from price with little trading against it. Likely cancelled.'], A: [ar ? 'جدار اتمتص' : 'Wall absorbed', ar ? 'الصفقات ضربت الجدار والجدار قل، لكن السعر فضل في صفه لمدة 40 ثانية. معناها إن فيه حد كان بياخد الحجم. استنتاج مش مؤكد.' : 'Trades hit the wall and it shrank, but price stayed on its side for 40 seconds. That suggests someone took the volume. Inference, unconfirmed.'], X: [ar ? 'جدار اتكسر' : 'Wall broken', ar ? 'الصفقات ضربت الجدار والسعر عدّى من ناحيته.' : 'Trades hit the wall and price went through it.'], H: [ar ? 'جدار بيتضرب' : 'Wall being hit', ar ? 'الصفقات بتضرب الجدار ولسه ماعدّاش 15 ثانية عشان نحكم إنه اتمتص ولا اتكسر.' : 'Trades are hitting the wall. Not enough time (15 s) has passed to say absorbed or broken.'] }[e.cls];
+      title = M[0]; html = row(ar ? 'إيه اللي حصل؟' : 'What happened', `${clock(e.t)}: ${side} ${fmt(e.qty, 3)} ${coin} (≈ $${fmt(e.qty * e.p)}) @ ${fmt(e.p, d)}. ${ar ? 'عاش' : 'Lived'} ${Math.round(e.life / 1000)} ${ar ? 'ثانية' : 's'}.`) + row(ar ? 'معناها' : 'Meaning', M[1]) + caution(ar ? 'دفتر الأوامر ممكن يتلاعب فيه، والحدث ده مجرد استنتاج. ماعندناش نسبة نجاح مثبتة له، وممكن يفشل.' : 'Order books can be spoofed and this is only an inference. There is no proven hit rate for it and it can fail.');
     } else if (kind === 'empty') { title = ar ? 'مفيش بيانات هنا' : 'No data here'; html = `<div class="note">${ar ? 'مفيش عمود مسجل عند النقطة دي. التسجيل بيبدأ من لحظة فتح الصفحة بس.' : 'No recorded column at this point. Recording only starts when the page is opened.'}</div>`; }
     else {
       const K = {
+        ev: [ar ? 'علامات الأحداث' : 'Event markers', ar ? 'P = جدار اتسحب قريب. C = جدار اتلغى بعيد. A = جدار اتمتص (اتضرب والسعر ثبت). X = جدار اتكسر. A? = لسه بيتضرب. كلها استنتاج من الدفتر والصفقات، مش مؤكدة، وممكن تفشل.' : 'P = wall pulled near price. C = wall cancelled far away. A = wall absorbed (traded into, price held). X = wall broken. A? = still being hit. All are inferences from the book and trades, unconfirmed, and can fail.'],
         bid: [ar ? 'أوامر شراء واقفة' : 'Resting buy orders', ar ? 'لون أخضر: أوامر شراء مستنية في الدفتر تحت السعر الحالي ولسه ماتنفذتش.' : 'Green: buy orders waiting in the book below the current price, not yet executed.'],
         ask: [ar ? 'أوامر بيع واقفة' : 'Resting sell orders', ar ? 'لون أحمر: أوامر بيع مستنية في الدفتر فوق السعر الحالي.' : 'Red: sell orders waiting in the book above the current price.'],
         buy: [ar ? 'صفقة شراء بالسوق' : 'Market buy trade', ar ? 'دايرة خضرا: مشتري أخد أوامر البيع الواقفة فنفذت صفقة فعلية. حجم الدايرة = حجم الصفقة.' : 'Green circle: a buyer took resting sell orders and a real trade happened. Circle size = trade size.'],
