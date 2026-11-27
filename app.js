@@ -1,6 +1,6 @@
 import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, fetchAggFrom, DIAG_TESTS, Feed } from './data.js';
 import { computeICT, wilderATR } from './ict.js';
-import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
+import { sessionCVD, avwap, idxAtOrAfter, sessionOf } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
@@ -230,6 +230,18 @@ class App {
     this.chart.invalidate(); return { t };
   }
   tradeLive(t) { return t.status === 'open' && t.sym === this.state.symbol && this.price != null ? toR(t, this.price) : null; }
+  journalAnalytics(done) {
+    const ar = isAr(), T = (e, x) => ar ? x : e; if (done.length < 2) return `<div class="note">${T('Analytics appear after 2 closed trades.', 'التحليلات بتظهر بعد صفقتين مقفولتين.')}</div>`;
+    const asc = done.slice().sort((x, y) => x.closedAt - y.closedAt); let c = 0; const cv = [0].concat(asc.map(t => c += t.R)); const mn = Math.min(...cv), mx = Math.max(...cv), W = 300, H = 60, px = i => (i / (cv.length - 1) * W).toFixed(1), py = v => (H - 4 - (v - mn) / ((mx - mn) || 1) * (H - 8)).toFixed(1);
+    const grp = f => { const m = {}; asc.forEach(t => { const k = f(t); (m[k] ||= []).push(t.R); }); return Object.entries(m).map(([k, a]) => `<div class="kv"><span>${k}</span><span>${a.length} · ${(a.filter(r => r > 0).length / a.length * 100).toFixed(0)}% · ${(a.reduce((s, r) => s + r, 0) / a.length).toFixed(2)}R</span></div>`).join(''); };
+    let pk = 0, dd = 0; cv.forEach(v => { pk = Math.max(pk, v); dd = Math.max(dd, pk - v); });
+    const win = asc.filter(t => t.R > 0), los = asc.filter(t => t.R <= 0); const gw = win.reduce((s, t) => s + t.R, 0), gl = -los.reduce((s, t) => s + t.R, 0);
+    return `<div class="grp">${T('Analytics (from your closed paper trades)', 'تحليلات (من صفقاتك الورقية المقفولة)')}</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="background:var(--bg2,#0f131c);border-radius:6px"><line x1="0" x2="${W}" y1="${py(0)}" y2="${py(0)}" stroke="#555" stroke-dasharray="3 3"/><polyline fill="none" stroke="${c >= 0 ? '#26a69a' : '#ef5350'}" stroke-width="1.6" points="${cv.map((v, i) => px(i) + ',' + py(v)).join(' ')}"/></svg>
+    <div class="kv"><span>${T('Max drawdown · profit factor', 'أقصى تراجع · معامل الربح')}</span><span>-${dd.toFixed(2)}R · ${gl > 0 ? (gw / gl).toFixed(2) : '∞'}</span></div>
+    <div class="kv"><span>${T('Avg win · avg loss', 'متوسط الربح · متوسط الخسارة')}</span><span>${win.length ? (gw / win.length).toFixed(2) : '-'}R · ${los.length ? (-gl / los.length).toFixed(2) : '-'}R</span></div>
+    <div class="note">${T('By direction', 'حسب الاتجاه')} (n · win · avg R)</div>${grp(t => t.dir === 'long' ? T('Long', 'شراء') : T('Short', 'بيع'))}<div class="note">${T('By symbol', 'حسب الرمز')}</div>${grp(t => t.sym)}<div class="note">${T('By setup label at creation', 'حسب تصنيف الإعداد وقت الإنشاء')}</div>${grp(t => { const m = /^(.*?) \d+\/100/.exec(t.why || ''); return m ? m[1] : T('No setup', 'من غير إعداد'); })}<div class="note">${T('By session of entry (New York)', 'حسب جلسة الدخول (نيويورك)')}</div>${grp(t => sessionOf(t.created))}
+    <div class="note">${T('Small samples mislead: under 30 trades these are not meaningful.', 'العينات الصغيرة مضللة: أقل من 30 صفقة الأرقام دي مش ليها معنى.')}</div>`;
+  }
   openPlanner(keep) {
     this._sheet = 'plan'; const s = this.state; const sy = s.symbol; const df = this.planDefaults(); const p = this.price; const d = p ? decimals(p) : 2; const inp = (id, v) => `<input type="number" step="any" inputmode="decimal" id="${id}" value="${v != null && isFinite(v) ? (+v).toFixed(d) : ''}">`;
     const old = keep && $('#plDir') ? { dir: $('#plDir').value, e: $('#plE').value, s: $('#plS').value, t: $('#plT').value, r: $('#plR').value } : null;
@@ -245,6 +257,7 @@ class App {
       <div class="grp">Active (${act.length})</div>${act.map(t => { const r = this.tradeLive(t); const dd = decimals(t.entry); return `<div class="alrow"><span><b class="${t.dir === 'long' ? 'u' : 'd'}">${t.dir.toUpperCase()}</b> ${t.sym} ${t.status === 'pending' ? 'waiting' : 'open'} · ${fmt(t.entry, dd)} / SL ${fmt(t.sl, dd)} / TP ${fmt(t.tp, dd)}${r != null ? ` · <b class="${r >= 0 ? 'u' : 'd'}">${r >= 0 ? '+' : ''}${r.toFixed(2)}R</b>` : ''}</span><span>${t.status === 'open' && t.sym === sy ? `<button class="btn" data-close="${t.id}">Close</button> ` : ''}<button class="btn" data-del="${t.id}">${t.status === 'pending' ? 'Cancel' : '✕'}</button></span></div>`; }).join('') || '<div class="note">No active plans.</div>'}
       <div class="grp">Journal (fills itself)</div>
       ${st.n ? `<div class="kv"><span>Trades · win rate</span><span>${st.n} · ${st.winRate.toFixed(0)}%</span></div><div class="kv"><span>Total · average R</span><span class="${st.totalR >= 0 ? 'u' : 'd'}">${st.totalR >= 0 ? '+' : ''}${st.totalR.toFixed(2)}R · ${st.avgR.toFixed(2)}R</span></div><div class="kv"><span>Avg MAE · avg MFE</span><span>${st.maeR.toFixed(2)}R · ${st.mfeR.toFixed(2)}R</span></div>` : '<div class="note">No closed trades yet.</div>'}
+      ${this.journalAnalytics(done)}
       ${done.slice(0, 25).map(t => { const dd = decimals(t.entry), dr = riskDist(t); return `<div class="jr"><div><b class="${t.R >= 0 ? 'u' : 'd'}">${t.R >= 0 ? '+' : ''}${t.R.toFixed(2)}R${money(t)}</b> ${t.result}${t.ambiguous ? ' (same-candle, counted as stop)' : ''} · ${t.dir} ${t.sym} <button class="btn" data-del="${t.id}">✕</button></div><div class="note">${fmt(t.entry, dd)} → ${fmt(t.exit, dd)} · SL ${fmt(t.sl, dd)} TP ${fmt(t.tp, dd)} · MAE ${((t.mae || 0) / dr).toFixed(2)}R · MFE ${((t.mfe || 0) / dr).toFixed(2)}R · held ${t.openedAt ? Math.max(1, Math.round((t.closedAt - t.openedAt) / 60000)) + ' min' : 'n/a'}</div><div class="note">${esc(t.why || '')}</div><input type="text" maxlength="120" data-note="${t.id}" placeholder="Note" value="${esc(t.note || '')}"></div>`; }).join('')}
       <div class="row"><button class="btn" id="plCsv">Export journal (.csv)</button></div>`;
     $('#sheet').hidden = false;
