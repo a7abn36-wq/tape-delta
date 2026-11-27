@@ -179,6 +179,8 @@ class App {
       this.save(); this.chart.invalidate();
     } catch {}
   }
+  async pollSpot() { try { const r = await fetch('https://api.gold-api.com/price/XAU', { cache: 'no-store' }); const j = await r.json(); if (j && j.price > 0) this.xau = { p: j.price, at: Date.parse(j.updatedAt) || Date.now(), got: Date.now() }; } catch { this.xau = null; } this.chart.invalidate(); }
+  goldSourceTag() { if (!this.isGold()) return null; const s = this.state.symbol, ar = isAr(); let t = s === 'PAXGUSDT' ? (ar ? 'المصدر: PAXG بديل' : 'SRC: Binance PAXG, proxy') : (ar ? 'المصدر: XAUUSDT عقد، مش سبوت' : 'SRC: Binance XAUUSDT perp, not spot'); if (this.xau && this.price && Date.now() - this.xau.got < 180e3) t += ' · ' + ((this.price / this.xau.p - 1) * 100 >= 0 ? '+' : '') + ((this.price / this.xau.p - 1) * 100).toFixed(2) + '% ' + (ar ? 'عن السبوت' : 'vs spot'); return t; }
   isGold() { return GOLD.has(this.state.symbol); }
   async loadGold(gen) {
     this.gold = null; if (!this.isGold() || !this.src) return; const src = this.src, sym = this.state.symbol;
@@ -191,7 +193,7 @@ class App {
       this.gold = G; this.pollGoldPx(); this.chart.invalidate(); this.renderGold();
     } catch (e) { if (gen === this.gen) this.gold = { err: e.message }; this.renderGold(); }
   }
-  async pollGoldPx() { if (!this.isGold() || !this.src || !this.gold || this.gold.err) return; try { const e = await fetchPrice(this.src, 'EURUSDT'); this.goldPx = { e }; this.renderGold(); } catch {} }
+  async pollGoldPx() { if (!this.isGold() || !this.src || !this.gold || this.gold.err) return; try { const e = await fetchPrice(this.src, 'EURUSDT'); this.goldPx = { e }; this.pollSpot(); this.renderGold(); } catch {} }
   goldLevels() {
     const G = this.gold; if (!this.isGold() || !this.state.ind.gold || !G || G.err || !G.atr) return null; const o = G.today.o, a = G.atr; const lv = [];
     if (this.state.ind.goldAtr) for (const k of [-1, -0.5, 0.5, 1]) lv.push({ name: `ATR ${k > 0 ? '+' : ''}${k}`, p: o + k * a });
@@ -202,10 +204,12 @@ class App {
     if (!this.isGold()) { el.innerHTML = '<div class="note">The gold pack is for PAXGUSDT (gold token) and XAUUSDT (needs Futures). Pick PAXGUSDT in the symbol list.</div>'; return; }
     if (!G) { el.innerHTML = '<div class="note">Loading gold data...</div>'; return; } if (G.err) { el.innerHTML = `<div class="note">Could not load: ${esc(G.err)}</div>`; return; }
     const px = this.price ?? G.today.c, d = decimals(px), rng = Math.max(G.today.h, px) - Math.min(G.today.l, px), used = G.atr ? rng / G.atr * 100 : null; const now = Date.now(); const open = goldMarketOpen(now);
+    const sp = this.xau && Date.now() - this.xau.got < 180e3 ? this.xau : null; const spotRow = `<div class="kv"><span><span class="tag REAL">REAL</span> ${isAr() ? 'سبوت الدهب XAU (gold-api.com، سعر واحد مش شموع)' : 'Spot gold XAU (gold-api.com, one quote, no candles)'}</span><span>${sp ? fmt(sp.p, 2) + ' · ' + (px / sp.p - 1 >= 0 ? '+' : '') + ((px / sp.p - 1) * 100).toFixed(2) + '% ' + (isAr() ? 'فرق هذا الشارت' : 'this chart vs spot') : 'N/A'}</span></div><div class="note">${isAr() ? 'فرق مقاس: PAXG/XAUUSDT على Binance بيختلف عن سبوت الدهب عادة حوالي 0.1 لـ 0.3% (حوالي 4 لـ 10 دولار على 3,670)، جزء منه سعر USDT مقابل الدولار (حوالي 0.13%). سعر MT5 عند وسيطك ممكن يختلف كمان بالسبريد والتغذية، فمستويات الشارت دي تقريبية بالنسبة لـ MT5.' : 'Measured: Binance PAXG / XAUUSDT usually sits about 0.1 to 0.3% from spot gold (about $4 to $10 at 3,670), partly because USDT trades slightly under $1 (about 0.13%). Your MT5 broker price can differ again by spread and feed, so levels here are approximate for MT5.'}</div>`;
     const ch = G.today.o ? (px / G.today.o - 1) * 100 : null; let usd = null; if (this.goldPx.e && G.e0) usd = -Math.log(this.goldPx.e / G.e0) * 100;
     const times = goldTimes(now).filter(t => t.t > now - 3600e3).slice(0, 4).map(t => `<div class="kv"><span>${esc(t.name)}</span><span>${new Date(t.t).toLocaleString([], { hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit' })} · ${t.t > now ? 'in ' + (t.t - now > 36e5 ? Math.floor((t.t - now) / 36e5) + 'h ' : '') + Math.round(((t.t - now) % 36e5) / 6e4) + 'm' : 'just passed'}</span></div>`).join('');
     const ses = sessionRanges(this.candles, this.tfMs()).map(r => `<div class="kv"><span>${r.name}${r.active ? ' (live)' : ''}</span><span>${fmt(r.lo, d)} to ${fmt(r.hi, d)} · ${fmt(r.hi - r.lo, d)}${G.atr ? ' · ' + ((r.hi - r.lo) / G.atr * 100).toFixed(0) + '% ATR' : ''}</span></div>`).join('') || '<div class="note">Session ranges need a 1h or lower timeframe.</div>';
     el.innerHTML = `<div class="leg">${tag('PROXY', 'PAXG is a gold-backed token on a crypto exchange, not spot gold (XAU). It tracks gold closely but is a different market. Volumes, spreads and weekend moves are not the gold market.')}</div>
+    ${spotRow}
     <div class="kv"><span>Gold market (NY time)</span><span class="${open ? 'u' : 'd'}">${open ? 'open' : 'closed (weekend): PAXG moves are crypto-only'}</span></div>
     <div class="grp">Daily range vs ATR(14)</div>
     <div class="kv"><span>Daily ATR(14)</span><span>${G.atr ? fmt(G.atr, d) : 'n/a'}</span></div>

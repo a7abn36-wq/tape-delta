@@ -37,7 +37,9 @@ export function computeICT(c, tfMs, levels) {
   // structure + order blocks
   let lastH = null, lastL = null, trend = null, si = 0;
   const obs = [];
-  for (let k = 0; k < n; k++) {
+  // the still-forming last candle has a provisional close: a structure break must never be decided on it (it could repaint)
+  const kEnd = c[n - 1].t + tfMs > Date.now() ? n - 1 : n;
+  for (let k = 0; k < kEnd; k++) {
     while (si < sw.length && sw[si].conf <= k) { const s = sw[si++]; if (s.type === 'H') lastH = { ...s, broken: false }; else lastL = { ...s, broken: false }; }
     if (lastH && !lastH.broken && c[k].c > lastH.p) {
       lastH.broken = true; const kind = trend === 'bear' ? 'CHoCH' : 'BOS'; trend = 'bull';
