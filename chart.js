@@ -9,7 +9,8 @@ const BG = new Image(); BG.src = 'icons/bg.jpg'; BG.onload = () => { try { windo
 let AXW = 68; const AXH = 24, SUBH = 92;
 function nice(step) { const e = Math.pow(10, Math.floor(Math.log10(step))); const f = step / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; }
 function fmtP(p, dec) { return p.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }); }
-export function decimals(price) { return price >= 1000 ? 2 : price >= 100 ? 2 : price >= 1 ? 3 : price >= 0.1 ? 4 : price >= 0.01 ? 5 : price >= 0.0001 ? 6 : 8; }
+let FXM = false; export function setFx(v) { FXM = !!v; }
+export function decimals(price) { if (FXM) return price >= 20 ? 3 : 5; return price >= 1000 ? 2 : price >= 100 ? 2 : price >= 1 ? 3 : price >= 0.1 ? 4 : price >= 0.01 ? 5 : price >= 0.0001 ? 6 : 8; }
 function fmtV(v) { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : a >= 10 ? v.toFixed(1) : a >= 1 ? v.toFixed(2) : v.toFixed(3); }
 
 export class Chart {

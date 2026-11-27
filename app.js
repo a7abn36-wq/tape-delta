@@ -14,7 +14,7 @@ import { loadProfileCandles, computeProfile } from './vp.js';
 import { init as i18nInit, apply as i18nApply, setLang, helpHTML, settingsHTML, isAr } from './i18n.js';
 import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChange, corr } from './gold.js';
 import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
-import { Chart, decimals } from './chart.js';
+import { setFx, Chart, decimals } from './chart.js';
 
 const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
@@ -56,7 +56,10 @@ class App {
       $('#symL').querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const id = b.dataset.p; if (!SYMBOLS.some(s => s.id === id)) SYMBOLS.push({ id, name: id.replace(/USDT$/, ''), kinds: ['spot'], group: 'more' }); const ex = this.state.extraSyms ||= []; if (!ex.includes(id) && !SYMBOLS.find(s => s.id === id && !s.group)) { ex.push(id); if (ex.length > 30) ex.shift(); } this.exitReplay(); this.state.symbol = id; this.save(); this.selDraw = null; $('#sheet').hidden = true; sym.innerHTML = ''; this.rebuildSymSelect(sym); this.load(); this.renderAlerts(); }); };
     $('#symQ').oninput = draw; draw(); $('#symQ').focus();
   }
-  rebuildSymSelect(sym) { const opt = s => `<option value="${s.id}">${s.id} · ${s.name}</option>`; sym.innerHTML = SYMBOLS.filter(s => !s.group).map(opt).join('') + `<optgroup label="More crypto (Binance Spot, USDT)">` + SYMBOLS.filter(s => s.group === 'more').map(opt).join('') + `</optgroup><option value="__search">🔍 Search any USDT pair…</option>`; sym.value = this.state.symbol; }
+  rebuildSymSelect(sym) { const opt = s => `<option value="${s.id}">${s.id} · ${s.name}</option>`; sym.innerHTML = SYMBOLS.filter(s => !s.group).map(opt).join('') + `<optgroup label="Forex (Kraken, no order flow)">` + SYMBOLS.filter(s => s.group === 'fx').map(opt).join('') + `</optgroup>` + `<optgroup label="More crypto (Binance Spot, USDT)">` + SYMBOLS.filter(s => s.group === 'more').map(opt).join('') + `</optgroup><option value="__search">🔍 Search any USDT pair…</option>`; sym.value = this.state.symbol; }
+  get noFlow() { return !!(this.src && this.src.key === 'kraken'); }
+  applyFlowMode() { const FL = ['delta', 'cvd', 'scvd', 'flowsig', 'vp', 'liq', 'bubbles', 'cvdDiv', 'absGate'], s = this.state; if (this.noFlow) { s.indBak ||= {}; for (const k of FL) if (s.ind[k]) { s.indBak[k] = true; s.ind[k] = false; } } else if (s.indBak) { for (const k of Object.keys(s.indBak)) s.ind[k] = true; delete s.indBak; } this.save(); }
+  async krakenPoll(gen) { if (gen !== this.gen || !this.src || this.src.key !== 'kraken' || this.replay) return; try { const k = await fetchKlines(this.src, this.state.symbol, this.state.tf, 3); if (gen !== this.gen) return; this.restOk = Date.now(); for (const b of k) this.onKline(b); } catch (e) {} }
   tfMs() { return TFS[this.state.tf]; }
   visibleCandles() { return this.replay ? (this.replay.vis || this.candles.slice(0, this.replay.idx + 1)) : this.candles; }
   toast(msg, ms = 6000) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; $('#toasts').appendChild(d); while ($('#toasts').children.length > 4) $('#toasts').firstChild.remove(); setTimeout(() => d.remove(), ms); }
@@ -68,7 +71,7 @@ class App {
     let c, l;
     if (!this.src) { c = 'bad'; l = this.feedStatus === 'connecting' ? 'connecting' : 'no feed'; }
     else if (wsOk) { c = 'live'; l = 'LIVE ' + (src.includes('Futures') ? 'Futures' : 'Binance') + ' WS'; }
-    else if (restOk) { c = 'live'; l = 'LIVE REST 2s'; }
+    else if (restOk) { c = 'live'; l = this.noFlow ? 'FX Kraken · poll 15s · no order flow' : 'LIVE REST 2s'; }
     else if (this.feedStatus === 'connecting') { c = 'warn'; l = 'connecting'; }
     else { c = 'bad'; l = 'STALE'; }
     const I = this.integ; const dq = !this.src ? '' : (I.bad || I.gaps) ? ' · data ⚠' : ' · data ✓'; el.className = 'feed ' + c; t.textContent = (src ? (this.src.key === 'fut' ? 'Futures perp' : 'Spot') + ' · ' : '') + l + (age != null ? ' · ' + (age < 2 ? 'now' : age + 's') : '') + dq;
@@ -105,7 +108,7 @@ class App {
   // ---------- loading ----------
   async load() {
     const gen = ++this.gen; const { symbol, tf } = this.state;
-    this.feed.close(); this.liq.stop(); this.candles = []; this.trades = []; this.ticks = new Map(); this.fpCache = new Map(); this.tickQ = []; this.recon = new Map(); this.integ = { missed: 0, reloads: 0, lastAggId: null, issues: new Map(), gaps: 0, bad: 0 }; this.conf = null; this.tape = []; this.ict = null; this.price = null; this.prevPrice = null; this.depth = null; this.ticker = null; this.extras = null;
+    this.feed.close(); this.liq.stop(); clearInterval(this._krT); this.candles = []; this.trades = []; this.ticks = new Map(); this.fpCache = new Map(); this.tickQ = []; this.recon = new Map(); this.integ = { missed: 0, reloads: 0, lastAggId: null, issues: new Map(), gaps: 0, bad: 0 }; this.conf = null; this.tape = []; this.ict = null; this.price = null; this.prevPrice = null; this.depth = null; this.ticker = null; this.extras = null;
     this.loadMsg = 'Loading ' + symbol + ' ' + tf + '...'; this.chart.invalidate(); this.renderTape(); this.renderDom(); this.renderStats();
     this.setFeedStatus('connecting');
     let src;
@@ -118,7 +121,8 @@ class App {
       const k = await fetchKlines(src, symbol, tf, 800); if (gen !== this.gen) return;
       this.candles = k; this.price = k[k.length - 1].c; this.chart.resetView(); this.checkData(); this.recomputeICT(true);
     } catch (e) { if (gen !== this.gen) return; this.loadMsg = 'Could not load candles: ' + e.message; this.setFeedStatus('down'); this.chart.invalidate(); return; }
-    this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
+    setFx(src.key === 'kraken'); this.applyFlowMode(); this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
+    if (src.key === 'kraken') { this.depth = null; this.tape = []; this.ticker = null; this._ev = null; this.vp = null; this.setFeedStatus('live'); this.renderTape(); this.renderDom(); this.renderStats(); this._krT = setInterval(() => this.krakenPoll(gen), 15000); this.loadLevels(gen); return; }
     this.feed.open(src, symbol, tf);
     if (this.state.ind.liq) this.liq.start(src, symbol);
     this._ev = null; this.vp = null; this.vpKey = null; this.loadVP(true); this.loadLevels(gen); this.loadGold(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
@@ -146,7 +150,7 @@ class App {
   }
   async poll() {
     const gen = this.gen, src = this.src; if (!src) return; const sym = this.state.symbol;
-    try { const t = await fetchTicker(src, sym); if (gen === this.gen) { this.ticker = t; this.renderStats(); } } catch {}
+    if (src.key !== 'kraken') try { const t = await fetchTicker(src, sym); if (gen === this.gen) { this.ticker = t; this.renderStats(); } } catch {}
     if (src.key === 'fut') { try { const e = await fetchFutExtras(sym); if (gen === this.gen) this.extras = e; } catch {} }
     // other-symbol alerts
     const syms = [...new Set(this.state.alerts.map(a => a.sym).concat(this.openTrades().map(t => t.sym)).filter(s => s !== sym))];
@@ -593,11 +597,13 @@ class App {
     $('#legend').innerHTML = `<b>${k}</b> O <b class="${up ? 'u' : 'd'}">${fmt(b.o, d)}</b> H <b class="${up ? 'u' : 'd'}">${fmt(b.h, d)}</b> L <b class="${up ? 'u' : 'd'}">${fmt(b.l, d)}</b> C <b class="${up ? 'u' : 'd'}">${fmt(b.c, d)}</b> Vol <b>${fmtV(b.v)}</b> Δ <b class="${dl >= 0 ? 'u' : 'd'}">${dl >= 0 ? '+' : ''}${fmtV(dl)}</b>`;
   }
   renderTape() {
+    if (this.noFlow) { const el = $('#pane-tape'); el.innerHTML = '<div class="note">N/A: ' + (isAr() ? 'الفوركس مفيهوش صفقات فردية مجانية، فمفيش شريط.' : 'free forex data has no trade-by-trade feed, so there is no tape.') + '</div>'; return; }
     const el = $('#pane-tape'); const rp = this.replay; const tape = rp ? (rp.cur != null ? this.replayTape() : null) : this.tape; if (rp && !tape) { el.innerHTML = '<div class="note">Replay is in candle mode, so there is no tape. Switch the replay step to 1s, 5s or 15s to replay real trades.</div>'; return; } const T = tape; if (!T.length) { el.innerHTML = '<div class="note">Waiting for trades from the exchange feed...</div>'; return; }
     const d = decimals(T[0].p); const big = T.map(t => t.q).sort((a, b) => b - a)[Math.floor(T.length * 0.15)] || 0;
     el.innerHTML = T.map(t => `<div class="trow ${t.side}${t.q >= big && big > 0 ? ' big' : ''}"><span>${new Date(t.t).toLocaleTimeString([], { hour12: false })}</span><span>${fmt(t.p, d)}</span><span>${fmtV(t.q)}</span></div>`).join('');
   }
   renderDom() {
+    if (this.noFlow) { const el = $('#pane-dom'); el.innerHTML = '<div class="note">N/A: ' + (isAr() ? 'الفوركس مفيهوش أوردر بوك مجاني.' : 'free forex data has no order book.') + '</div>'; return; }
     const el = $('#pane-dom'); let dp = this.depth; const rp = this.replay;
     if (rp) { if (rp.cur == null) { el.innerHTML = '<div class="note">Replay is in candle mode, so there is no order book. Switch the replay step to 1s, 5s or 15s.</div>'; return; } dp = this.replayBook(); if (!dp) { el.innerHTML = '<div class="note">No order book was recorded for this moment. Binance does not publish historical depth, so only moments since this page opened can be replayed. Tap "Book" in the replay bar to jump to the first recorded moment.</div>'; return; } }
     if (!dp) { el.innerHTML = '<div class="note">Loading order book...</div>'; return; }
@@ -609,6 +615,7 @@ class App {
     el.innerHTML = `<div class="note">${rp ? 'REPLAY book from ' + new Date(dp.t).toLocaleTimeString([], { hour12: false }) + ' (recorded, bins of ' + this.liq.bin + ') · ' : ''}Price · size · cumulative (14 levels)</div><div class="dom">${ah}<div class="spread">spread ${fmt(sp, d)} · bid share ${imb.toFixed(0)}%</div>${bh}</div>`;
   }
   renderStats() {
+    if (this.noFlow) { const el = $('#pane-stats'); if (el) el.innerHTML = '<div class="grp">' + this.state.symbol + ' · FX</div><div class="kv"><span>Last</span><span>' + (this.price != null ? fmt(this.price, decimals(this.price) + 2) : 'N/A') + '</span></div><div class="note">N/A: ' + (isAr() ? 'الدلتا والCVD والفوتبرنت والفقاعات وبروفايل الفوليوم والليكويديتي محتاجة بيانات صفقات، ومش موجودة للفوركس. المصدر: Kraken (سوقها الخاص) كل 15 ثانية، آخر 720 شمعة بس. الفوليوم هو فوليوم Kraken مش فوليوم السوق كله.' : 'Delta, CVD, footprint, bubbles, volume profile and liquidity need trade data, which free forex does not have. Source: Kraken FX (its own market, polled every 15s), latest 720 candles only. Volume is Kraken volume, not the whole market (PROXY).') + '</div>'; return; }
     const el = $('#pane-stats'); if (!el) return; const c = this.candles, last = c[c.length - 1]; const t = this.ticker, d = last ? decimals(last.c) : 2;
     let cvd = 0; for (const b of c) cvd += b.d; const kv = (a, b, cls = '') => `<div class="kv"><span>${a}</span><span class="${cls}">${b}</span></div>`;
     el.innerHTML = (last ? kv('Last', fmt(this.price ?? last.c, d)) : '') + (t ? kv('24h change', (t.chg >= 0 ? '+' : '') + t.chg.toFixed(2) + '%', t.chg >= 0 ? 'u' : 'd') + kv('24h high / low', fmt(t.hi, d) + ' / ' + fmt(t.lo, d)) + kv('24h volume', fmtV(t.vol)) : '') +
@@ -677,7 +684,7 @@ class App {
   buildUI() {
     for (const id of (this.state.extraSyms || [])) if (!SYMBOLS.some(s => s.id === id)) SYMBOLS.push({ id, name: id.replace(/USDT$/, ''), kinds: ['spot'], group: 'more' });
     if (!SYMBOLS.some(s => s.id === this.state.symbol)) SYMBOLS.push({ id: this.state.symbol, name: this.state.symbol.replace(/USDT$/, ''), kinds: ['spot'], group: 'more' });
-    const sym = $('#sym'); const opt = s => `<option value="${s.id}">${s.id} · ${s.name}</option>`; sym.innerHTML = SYMBOLS.filter(s => !s.group).map(opt).join('') + `<optgroup label="More crypto (Binance Spot, USDT)">` + SYMBOLS.filter(s => s.group === 'more').map(opt).join('') + `</optgroup><option value="__search">🔍 Search any USDT pair…</option>`; sym.value = this.state.symbol;
+    const sym = $('#sym'); this.rebuildSymSelect(sym);
     sym.onchange = () => { if (sym.value === '__search') { sym.value = this.state.symbol; this.symSearch(sym); return; } this.exitReplay(); this.state.symbol = sym.value; this.save(); this.selDraw = null; this.load(); this.renderAlerts(); };
     const tfs = $('#tfs'); tfs.innerHTML = Object.keys(TFS).map(t => `<button data-tf="${t}">${t}</button>`).join('');
     tfs.onclick = e => { const t = e.target.dataset.tf; if (!t) return; this.exitReplay(); this.state.tf = t; this.save(); this.renderTf(); this.load(); this.renderIndCounts(); };

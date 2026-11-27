@@ -52,9 +52,22 @@ export const SYMBOLS = [
   { id: 'LDOUSDT', name: 'Lido DAO', kinds: ['spot'], group: 'more' },
   { id: 'IMXUSDT', name: 'Immutable', kinds: ['spot'], group: 'more' },
   { id: 'STXUSDT', name: 'Stacks', kinds: ['spot'], group: 'more' },
+  { id: 'EURUSD', name: 'EUR/USD', kinds: ['kraken'], group: 'fx' },
+  { id: 'GBPUSD', name: 'GBP/USD', kinds: ['kraken'], group: 'fx' },
+  { id: 'USDJPY', name: 'USD/JPY', kinds: ['kraken'], group: 'fx' },
+  { id: 'AUDUSD', name: 'AUD/USD', kinds: ['kraken'], group: 'fx' },
+  { id: 'USDCAD', name: 'USD/CAD', kinds: ['kraken'], group: 'fx' },
+  { id: 'USDCHF', name: 'USD/CHF', kinds: ['kraken'], group: 'fx' },
+  { id: 'EURGBP', name: 'EUR/GBP', kinds: ['kraken'], group: 'fx' },
+  { id: 'EURJPY', name: 'EUR/JPY', kinds: ['kraken'], group: 'fx' },
+  { id: 'EURCHF', name: 'EUR/CHF', kinds: ['kraken'], group: 'fx' },
+  { id: 'EURAUD', name: 'EUR/AUD', kinds: ['kraken'], group: 'fx' },
+  { id: 'EURCAD', name: 'EUR/CAD', kinds: ['kraken'], group: 'fx' },
+  { id: 'AUDJPY', name: 'AUD/JPY', kinds: ['kraken'], group: 'fx' },
 ];
 export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5, '1w': 6048e5 };
 export const SRC = {
+  kraken: { key: 'kraken', label: 'Kraken FX (own market, REST poll)', rest: 'https://api.kraken.com/0/public', ws: [] },
   fut: { key: 'fut', label: 'Binance Futures', rest: 'https://fapi.binance.com/fapi/v1', ws: ['wss://fstream.binance.com/stream'] },
   spot: { key: 'spot', label: 'Binance Spot', rest: 'https://api.binance.com/api/v3', rests: ['https://api.binance.com/api/v3', 'https://data-api.binance.vision/api/v3'], ws: ['wss://stream.binance.com:443/stream', 'wss://stream.binance.com:9443/stream', 'wss://data-stream.binance.vision/stream'] },
 };
@@ -80,6 +93,7 @@ export async function resolveSource(sym, force = false) {
   const errs = [];
   for (const kind of info.kinds) {
     const src = SRC[kind];
+    if (kind === 'kraken') { try { const k = await fetchKlines(src, sym, '1m', 2); if (k.length) { resolved.set(sym, src); return src; } } catch (e) { errs.push('Kraken: ' + e.message); } continue; }
     for (const base of (src.rests || [src.rest])) {
       for (let at = 0; at < (kind === 'fut' ? 2 : 1); at++) { // futures REST can be slow on mobile networks: one patient retry before falling back to spot
         try {
@@ -92,13 +106,22 @@ export async function resolveSource(sym, force = false) {
   const err = new Error('No live feed reachable for ' + sym + ' (' + errs.join('; ') + ')');
   err.tried = errs; throw err;
 }
+const KR_IV = { '1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 };
+const _krC = new Map(); let _krQ = Promise.resolve();
+const krSlot = () => { const p = _krQ.then(() => new Promise(r => setTimeout(r, 1100))); _krQ = p; return p; };
+async function krGet(u) { const c = _krC.get(u); if (c && Date.now() - c.t < 2500) return c.p; const p = (async () => { await krSlot(); try { return await jget(u, 10000); } catch (e) { await krSlot(); await krSlot(); return await jget(u, 10000); } })(); _krC.set(u, { t: Date.now(), p }); p.catch(() => _krC.delete(u)); return p; }
 export async function fetchKlines(src, sym, tf, limit = 700, endTime) {
+  if (src.key === 'kraken') { // Kraken returns the latest 720 candles only and cannot page backwards. No taker-side split exists, so bv/sv/d are 0 and the app hides every flow feature for these symbols.
+    if (endTime || !KR_IV[tf]) return []; const j = await krGet(`${src.rest}/OHLC?pair=${sym}&interval=${KR_IV[tf]}`); if (j.error && j.error.length) throw new Error(j.error.join(' ')); const arr = Object.entries(j.result).find(([k]) => k !== 'last')[1];
+    return arr.slice(-limit).map(r => ({ t: r[0] * 1000, o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[6], bv: 0, sv: 0, d: 0, n: +r[7] }));
+  }
   let u = `${src.rest}/klines?symbol=${sym}&interval=${tf}&limit=${limit}`;
   if (endTime) u += `&endTime=${endTime}`;
   return (await jget(u, 10000)).map(parseKline);
 }
 export async function fetchKlinesFrom(src, sym, tf, startTime, limit = 1000) { return (await jget(`${src.rest}/klines?symbol=${sym}&interval=${tf}&startTime=${startTime}&limit=${limit}`, 10000)).map(parseKline); }
 export async function fetchTrades(src, sym, limit = 1000, endTime) {
+  if (src.key === 'kraken') return [];
   let u = `${src.rest}/aggTrades?symbol=${sym}&limit=${limit}`;
   if (endTime) u += `&endTime=${endTime}`;
   return (await jget(u, 10000)).map(parseTrade);
@@ -120,10 +143,12 @@ export async function fetchDepth(src, sym) {
   return { bids: d.bids.map(x => [+x[0], +x[1]]), asks: d.asks.map(x => [+x[0], +x[1]]) };
 }
 export async function fetchTicker(src, sym) {
+  if (src.key === 'kraken') return null;
   const d = await jget(`${src.rest}/ticker/24hr?symbol=${sym}`, 6000);
   return { last: +d.lastPrice, chg: +d.priceChangePercent, hi: +d.highPrice, lo: +d.lowPrice, vol: +d.volume, qvol: +d.quoteVolume };
 }
 export async function fetchPrice(src, sym) {
+  if (src.key === 'kraken') { const j = await jget(`${src.rest}/Ticker?pair=${sym}`, 6000); return +Object.values(j.result)[0].c[0]; }
   const d = await jget(`${src.rest}/ticker/price?symbol=${sym}`, 6000);
   return +d.price;
 }
