@@ -1,4 +1,5 @@
 import { ema, rsi, vwap } from './ict.js';
+import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
 const TH = {
   dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
   light: { bg: '#ffffff', panel: '#f4f6fa', grid: '#e6eaf1', text: '#5b6578', ax: '#1c2433', up: '#13967f', dn: '#d43b3b', cross: '#8a94a8', gold: '#b8860b', blue: '#1f6feb' },
@@ -26,7 +27,7 @@ export class Chart {
   restore(v) { this.view = { ...v }; this.invalidate(); }
   // geometry
   get plotW() { return this.W - AXW; }
-  subs() { const i = this.app.state.ind; return ['delta', 'cvd', 'rsi'].filter(k => i[k]); }
+  subs() { const i = this.app.state.ind; return ['delta', 'scvd', 'cvd', 'rsi'].filter(k => i[k]); }
   layout() { const subs = this.subs(); const mainH = Math.max(120, this.H - AXH - subs.length * SUBH); return { mainH, subs, subTop: k => mainH + subs.indexOf(k) * SUBH }; }
   xOf(i) { return this.plotW - (this.view.right - i) * this.view.barW; }
   iOf(x) { return this.view.right - (this.plotW - x) / this.view.barW; }
@@ -69,7 +70,8 @@ export class Chart {
     }
     // candles / footprint
     const fp = st.chartType === 'footprint' && bw >= 46 && !app.replay;
-    this.fpActive = fp; if (fp) app.fpWant((hi - lo) / (mh / 14));
+    this.fpActive = fp; if (fp) { app.fpWant((hi - lo) / (mh / 14)); app.fpEnsure(i0, i1); }
+    if (st.ind.liq && !app.replay) this.drawLiq(g, th, c, lo, hi, mh, fp);
     for (let i = i0; i <= i1; i++) {
       const b = c[i], x = this.xOf(i), up = b.c >= b.o, col = up ? th.up : th.dn;
       if (fp && app.drawFootprint(g, this, i, b, x, bw, th)) continue;
@@ -84,6 +86,8 @@ export class Chart {
     if (this.cache.key !== cacheKey) this.cache = { key: cacheKey };
     for (const n of [9, 21, 50, 200]) if (ind['ema' + n]) line(this.cache['e' + n] ||= ema(c, n), { 9: '#ffd54f', 21: '#ff9800', 50: '#4c8dff', 200: '#e040fb' }[n]);
     if (ind.vwap) line(this.cache.vw ||= vwap(c, app.tfMs()), '#00bcd4');
+    this.drawAVWAP(g, th, c, line, i0, i1);
+    if (app.integ && app.integ.issues.size) for (let i = i0; i <= i1; i++) if (app.integ.issues.has(i)) { g.fillStyle = th.gold; g.font = 'bold 11px system-ui'; g.textAlign = 'center'; g.fillText('!', this.xOf(i), this.ymap(c[i].h) - 8); g.textAlign = 'left'; }
     // ICT lines
     if (ict && ind.ict) {
       if (z.liq) for (const l of ict.liq) { const x = this.xOf(l.i); this.seg(x, l.p, this.plotW, l.p, l.kind === 'BSL' ? th.dn : th.up, [5, 4]); this.label(l.kind, this.plotW - 34, this.ymap(l.p) - 7, l.kind === 'BSL' ? th.dn : th.up); this.edge(l.p, l.kind, l.kind === 'BSL' ? th.dn : th.up); }
@@ -109,6 +113,37 @@ export class Chart {
     this.drawSubs(g, th, c, lay, i0, i1);
     this.drawCross(g, th, c, lay);
     app.onDraw && app.onDraw();
+  }
+  drawLiq(g, th, c, lo, hi, mh, fpOn) {
+    const L = this.app.liq, S = L.snaps; if (S.length < 2) return; const tf = this.app.tfMs(), bw = this.view.barW, now = Date.now();
+    const xT = t => this.xOf((t - c[0].t) / tf); const bin = L.bin; if (!bin) return;
+    const key = [S.length, S[S.length - 1].t, lo.toFixed(4), hi.toFixed(4), bw.toFixed(3), this.view.right.toFixed(3), this.plotW, mh, c[0].t, tf, this.app.state.theme].join('|');
+    if (this._heatKey !== key) {
+      this._heatKey = key; const oc = this._heat && this._heat.width === this.cv.width && this._heat.height === this.cv.height ? this._heat : (this._heat = document.createElement('canvas')); oc.width = this.cv.width; oc.height = this.cv.height;
+      const r = devicePixelRatio || 1, h = oc.getContext('2d'); h.setTransform(r, 0, 0, r, 0, 0); h.clearRect(0, 0, this.W, this.H);
+      const stride = Math.max(1, Math.floor(S.length / 320));
+      for (let n = 0; n < S.length; n += stride) {
+        const s0 = S[n], s1 = S[Math.min(S.length - 1, n + stride)], x1 = xT(s0.t), x2 = Math.max(x1 + 1, xT(s1.t === s0.t ? s0.t + 2000 : s1.t)); if (x2 < 0 || x1 > this.plotW) continue; const ref = s0.big * 3;
+        for (const [side, arr] of [['b', s0.B], ['a', s0.A]]) for (const [k, q] of arr) {
+          const p1 = (k + 1) * bin, p0 = k * bin; if (p1 < lo || p0 > hi) continue; const a = Math.min(1, Math.pow(q / ref, 0.6)); if (a < 0.06) continue;
+          const y1 = this.ymap(p1), y2 = this.ymap(p0); h.fillStyle = a > 0.8 ? `rgba(255,214,90,${0.55})` : side === 'b' ? `rgba(38,166,154,${(a * 0.5).toFixed(3)})` : `rgba(239,120,80,${(a * 0.5).toFixed(3)})`; h.fillRect(x1, y1, x2 - x1 + 0.5, Math.max(1, y2 - y1));
+        }
+      }
+    }
+    if (!fpOn) g.drawImage(this._heat, 0, 0, this.W, this.H);
+    // pulled-wall ghosts: fade with age
+    let shown = 0; for (const e of L.events.slice().reverse()) { if (shown >= 5) break; const al = L.ghostAlpha(e, now); if (al < 0.05 || e.kind !== 'pulled' || e.p < lo || e.p > hi) continue; shown++; const x = xT(e.t), y = this.ymap(e.p); g.globalAlpha = al; g.strokeStyle = e.side === 'b' ? th.up : th.dn; g.setLineDash([3, 3]); g.lineWidth = 1.2; g.beginPath(); g.moveTo(x - 40, y); g.lineTo(Math.min(this.plotW, x + 60 + (now - e.t) * 0), y); g.stroke(); g.setLineDash([]); g.fillStyle = th.gold; g.beginPath(); g.moveTo(x, y - 5); g.lineTo(x + 5, y); g.lineTo(x, y + 5); g.lineTo(x - 5, y); g.closePath(); g.fill(); g.font = '9px system-ui'; g.textAlign = 'left'; g.fillText('PULLED ' + fmtV(e.qty), x + 7, y - 6); g.globalAlpha = 1; }
+  }
+  drawAVWAP(g, th, c, line, i0, i1) {
+    const app = this.app, st = app.state, list = []; const user = st.avwaps[st.symbol] || [];
+    for (const a of user) { const i = idxAtOrAfter(c, a.t); if (i >= 0) list.push({ i, name: 'AVWAP', col: '#ba68c8', t: a.t }); }
+    const ict = app.ict; if (st.ind.avwapAuto && ict && st.ind.ict) { if (ict.lastH) list.push({ i: ict.lastH.i, name: 'AVWAP H', col: '#ff9800', t: c[ict.lastH.i].t }); if (ict.lastL) list.push({ i: ict.lastL.i, name: 'AVWAP L', col: '#4c8dff', t: c[ict.lastL.i].t }); }
+    for (const a of list) {
+      const key = 'av' + a.t; const av = this.cache[key] ||= avwap(c, a.i); line(av.v, a.col, 1.6);
+      g.globalAlpha = .45; g.setLineDash([2, 3]); line(av.up, a.col, 1); line(av.dn, a.col, 1); g.setLineDash([]); g.globalAlpha = 1;
+      const x = this.xOf(a.i); const v = av.v[a.i]; if (isFinite(v)) { g.fillStyle = a.col; g.beginPath(); g.arc(x, this.ymap(v), 3.5, 0, 7); g.fill(); }
+      const lastV = av.v[c.length - 1]; if (isFinite(lastV)) this.label(a.name + ' ' + fmtP(lastV, this.dec), this.plotW - 100, this.ymap(lastV) - 6, a.col);
+    }
   }
   label(txt, x, y, col) { // collision-avoiding label
     const g = this.ctx; g.font = '10px system-ui'; const w = g.measureText(txt).width + 4;
@@ -147,21 +182,22 @@ export class Chart {
       const top = lay.subTop(k), h = SUBH; g.save(); g.beginPath(); g.rect(0, top, this.plotW, h); g.clip();
       g.fillStyle = th.panel; g.fillRect(0, top, this.plotW, h); g.strokeStyle = th.grid; g.beginPath(); g.moveTo(0, top + .5); g.lineTo(this.W, top + .5); g.stroke();
       let vals; const bw = this.view.barW;
-      if (k === 'delta') vals = c.map(b => b.d); else if (k === 'cvd') { vals = this.cache.cvd ||= (() => { let s = 0; return c.map(b => (s += b.d)); })(); } else vals = this.cache.rsi ||= rsi(c);
+      if (k === 'scvd') { const sc = this.cache.scvd ||= (sessionCVD(c, app.tfMs()) || { none: 1 }); vals = sc.none ? c.map(() => NaN) : sc.v; if (sc.none) { g.fillStyle = th.text; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText('Session CVD needs a 1h or lower timeframe', 8, top + 46); } else { g.strokeStyle = th.grid; g.setLineDash([2, 3]); g.fillStyle = th.text; g.font = '9px system-ui'; g.textAlign = 'left'; for (const st2 of sc.starts) { if (st2.i < i0 - 1 || st2.i > i1 + 1) continue; const x2 = this.xOf(st2.i) - bw / 2; g.beginPath(); g.moveTo(x2, top); g.lineTo(x2, top + h); g.stroke(); g.fillText(st2.name, x2 + 3, top + h - 6); } g.setLineDash([]); } }
+      else if (k === 'delta') vals = c.map(b => b.d); else if (k === 'cvd') { vals = this.cache.cvd ||= (() => { let s = 0; return c.map(b => (s += b.d)); })(); } else vals = this.cache.rsi ||= rsi(c);
       let mn = Infinity, mx = -Infinity; for (let i = i0; i <= i1; i++) { const v = vals[i]; if (isNaN(v)) continue; mn = Math.min(mn, v); mx = Math.max(mx, v); }
-      if (k === 'delta') { const m = Math.max(Math.abs(mn), Math.abs(mx)) || 1; mn = -m; mx = m; } else if (k === 'rsi') { mn = 0; mx = 100; } else { const pd = (mx - mn) * .1 || 1; mn -= pd; mx += pd; }
+      if (k === 'delta') { const m = Math.max(Math.abs(mn), Math.abs(mx)) || 1; mn = -m; mx = m; } else if (k === 'rsi') { mn = 0; mx = 100; } else { if (!isFinite(mn)) { mn = 0; mx = 1; } const pd = (mx - mn) * .1 || 1; mn -= pd; mx += pd; }
       const y = v => top + 14 + (1 - (v - mn) / (mx - mn)) * (h - 22);
       if (k === 'delta') {
         g.strokeStyle = th.grid; g.beginPath(); g.moveTo(0, y(0)); g.lineTo(this.plotW, y(0)); g.stroke();
         for (let i = i0; i <= i1; i++) { const v = vals[i]; g.fillStyle = v >= 0 ? th.up : th.dn; const yy = y(v), y0 = y(0); g.fillRect(this.xOf(i) - Math.max(1, bw * .35), Math.min(yy, y0), Math.max(1, bw * .7), Math.max(1, Math.abs(yy - y0))); if (bw >= 34) { g.fillStyle = th.text; g.font = '9px ui-monospace,monospace'; g.textAlign = 'center'; g.fillText(fmtV(v), this.xOf(i), v >= 0 ? yy - 6 : yy + 8); } }
       } else {
         if (k === 'rsi') { g.strokeStyle = th.grid; for (const lv of [30, 70]) { g.beginPath(); g.moveTo(0, y(lv)); g.lineTo(this.plotW, y(lv)); g.stroke(); } }
-        g.strokeStyle = k === 'cvd' ? th.blue : '#b388ff'; g.lineWidth = 1.4; g.beginPath(); let s = false;
+        g.strokeStyle = k === 'cvd' ? th.blue : k === 'scvd' ? th.gold : '#b388ff'; g.lineWidth = 1.4; g.beginPath(); let s = false;
         for (let i = Math.max(0, i0 - 1); i <= Math.min(c.length - 1, i1 + 1); i++) { if (isNaN(vals[i])) continue; const xx = this.xOf(i), yy = y(vals[i]); if (!s) { g.moveTo(xx, yy); s = true; } else g.lineTo(xx, yy); } g.stroke();
       }
       g.fillStyle = th.text; g.font = '10px system-ui'; g.textAlign = 'left'; g.textBaseline = 'middle';
       const lastv = vals[Math.min(vals.length - 1, i1)];
-      g.fillText(k === 'delta' ? 'DELTA (taker buy - sell)' : k === 'cvd' ? 'CVD (cumulative delta, from first loaded bar)' : 'RSI 14', 6, top + 8);
+      g.fillText(k === 'delta' ? 'DELTA (taker buy - sell)' : k === 'cvd' ? 'CVD (cumulative delta, from first loaded bar)' : k === 'scvd' ? 'SESSION CVD (resets at Asia / London / NY, New York time)' : 'RSI 14', 6, top + 8);
       g.restore();
       g.fillStyle = th.text; g.textAlign = 'left'; g.font = '10px ui-monospace,monospace'; g.fillText(k === 'rsi' ? '70' : fmtV(mx), this.plotW + 6, top + 16); g.fillText(k === 'rsi' ? '30' : fmtV(mn), this.plotW + 6, top + h - 8);
     }

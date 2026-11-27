@@ -53,6 +53,16 @@ export async function fetchTrades(src, sym, limit = 1000, endTime) {
   if (endTime) u += `&endTime=${endTime}`;
   return (await jget(u, 10000)).map(parseTrade);
 }
+// All aggregated trades whose time falls inside [t0, t1]. Pages by id. Returns ticks [price, qty, isBuy, id] and whether it reached the end.
+export async function fetchTickWindow(src, sym, t0, t1, maxPages = 30) {
+  const out = []; let u = `${src.rest}/aggTrades?symbol=${sym}&startTime=${t0}&endTime=${t1}&limit=1000`; let complete = false;
+  for (let p = 0; p < maxPages; p++) {
+    const a = await jget(u, 10000); for (const x of a) { if (x.T > t1) { complete = true; break; } out.push([+x.p, +x.q, x.m ? 0 : 1, x.a]); }
+    if (complete || a.length < 1000) { complete = true; break; }
+    u = `${src.rest}/aggTrades?symbol=${sym}&fromId=${a[a.length - 1].a + 1}&limit=1000`;
+  }
+  return { ticks: out, complete };
+}
 export function parseTrade(a) { return { id: a.a, t: a.T, p: +a.p, q: +a.q, side: a.m ? 'sell' : 'buy' }; }
 export async function fetchDepth(src, sym) {
   const d = await jget(`${src.rest}/depth?symbol=${sym}&limit=20`, 5000);
@@ -100,7 +110,7 @@ export class Feed {
     ws.onmessage = ev => {
       this.last = Date.now();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
-      const d = m.data; if (!d) return;
+      const d = m.data; if (!d) return; if (d.E) this.skew = Date.now() - d.E;
       if (d.e === 'kline') { const k = d.k; this.h.kline({ t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, bv: +k.V, sv: +k.v - +k.V, d: 2 * +k.V - +k.v, n: k.n, closed: k.x }); }
       else if (d.e === 'aggTrade') this.h.trade({ id: d.a, t: d.T, p: +d.p, q: +d.q, side: d.m ? 'sell' : 'buy' });
     };

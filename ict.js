@@ -54,7 +54,8 @@ export function computeICT(c, tfMs, levels) {
       obs.push({ dir: 'bear', i: o, lo: c[o].l, hi: c[o].h, k });
     }
   }
-  out.struct = out.struct.slice(-10);
+  out.trend = trend; out.struct = out.struct.slice(-10);
+  out.lastH = [...sw].reverse().find(s => s.type === 'H') || null; out.lastL = [...sw].reverse().find(s => s.type === 'L') || null;
   const seen = new Set();
   for (const o of obs) {
     if (seen.has(o.dir + o.i)) continue; seen.add(o.dir + o.i);
@@ -128,7 +129,10 @@ export function computeICT(c, tfMs, levels) {
   return out;
 }
 
-export function ema(c, n) { const k = 2 / (n + 1); const o = []; let e; for (let i = 0; i < c.length; i++) { e = i === 0 ? c[0].c : c[i].c * k + e * (1 - k); o.push(i < n - 1 ? NaN : e); } return o; }
+export function ema(c, n) { // seeded with the SMA of the first n closes, like TradingView
+  const k = 2 / (n + 1); const o = new Array(c.length).fill(NaN); if (c.length < n) return o; let e = 0; for (let i = 0; i < n; i++) e += c[i].c; e /= n; o[n - 1] = e;
+  for (let i = n; i < c.length; i++) { e = c[i].c * k + e * (1 - k); o[i] = e; } return o;
+}
 export function rsi(c, n = 14) { // Wilder
   const o = new Array(c.length).fill(NaN); let g = 0, l = 0;
   for (let i = 1; i < c.length; i++) {

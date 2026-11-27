@@ -1,18 +1,22 @@
-import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, Feed } from './data.js';
+import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, Feed } from './data.js';
 import { computeICT, wilderATR } from './ict.js';
+import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
+import { checkCandles, reconcile, TAGS } from './integrity.js';
+import { LiqMap } from './liq.js';
+import { confluence } from './confluence.js';
 import { Chart, decimals } from './chart.js';
 
 const $ = s => document.querySelector(s);
-const KEY = 'tapedelta.v1';
+const KEY = 'tapedelta.v2';
 const DEF = {
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: true, rsi: false },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
-  alerts: [], drawings: {}, templates: {}, zoneAlerts: true,
+  alerts: [], drawings: {}, templates: {}, avwaps: {}, zoneAlerts: true,
 };
 const clone = o => JSON.parse(JSON.stringify(o));
 function loadState() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && typeof s === 'object') return merge(clone(DEF), s); } catch {} return clone(DEF); }
-function merge(base, s) { for (const k of Object.keys(base)) { if (s[k] === undefined) continue; if (base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) base[k] = merge(base[k], s[k] || {}); else base[k] = s[k]; } for (const k of ['templates', 'drawings']) if (s[k] && typeof s[k] === 'object') base[k] = s[k]; return base; }
+function merge(base, s) { for (const k of Object.keys(base)) { if (s[k] === undefined) continue; if (base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) base[k] = merge(base[k], s[k] || {}); else base[k] = s[k]; } for (const k of ['templates', 'drawings', 'avwaps']) if (s[k] && typeof s[k] === 'object') base[k] = s[k]; return base; }
 const nice = step => { const e = Math.pow(10, Math.floor(Math.log10(step))); const f = step / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; };
 const fmt = (v, d = 2) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtV = v => { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : a >= 10 ? v.toFixed(1) : v.toFixed(3); };
@@ -21,13 +25,13 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 class App {
   constructor() {
-    this.state = loadState(); this.candles = []; this.trades = []; this.fp = new Map(); this.fpStep = 0; this.fpFrom = null;
+    this.state = loadState(); this.candles = []; this.trades = []; this.ticks = new Map(); this.fpCache = new Map(); this.fpStep = 0; this.tickQ = []; this.tickBusy = 0; this.recon = new Map(); this.integ = { missed: 0, reloads: 0, lastAggId: null, issues: new Map(), gaps: 0, bad: 0 }; this.conf = null; this.confT = 0;
     this.src = null; this.ict = null; this.levels = null; this.replay = null; this.gen = 0; this.selDraw = null; this.loadMsg = 'Loading...';
     this.price = null; this.prevPrice = null; this.ticker = null; this.extras = null; this.depth = null; this.tape = []; this.loadingMore = false; this.feedStatus = 'connecting'; this.ictT = 0; this.zoneIn = {};
-    this.chart = new Chart($('#cv'), this);
+    this.liq = new LiqMap(() => { this.chart.invalidate(); this.renderLiq(); }); this.chart = new Chart($('#cv'), this);
     this.feed = new Feed({ status: s => this.setFeedStatus(s), kline: k => this.onKline(k), trade: t => this.onTrade(t) });
     this.buildUI(); this.applyTheme(); this.load();
-    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => this.renderStats(), 2000);
+    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
@@ -38,12 +42,12 @@ class App {
   renderFeed() {
     const el = $('#feed'), t = el.querySelector('span'); const src = this.src ? this.src.label : '';
     const map = { live: ['live', 'LIVE'], connecting: ['warn', 'connecting'], reconnecting: ['warn', 'reconnecting'], stale: ['warn', 'stale, reconnecting'], down: ['bad', 'no feed'] };
-    const [c, l] = map[this.feedStatus] || ['bad', this.feedStatus]; el.className = 'feed ' + c; t.textContent = (src ? src + ' · ' : '') + l;
+    const [c, l] = map[this.feedStatus] || ['bad', this.feedStatus]; const I = this.integ; const dq = !this.src ? '' : (I.bad || I.gaps) ? ' · data ⚠' : ' · data ✓'; el.className = 'feed ' + c; t.textContent = (src ? src + ' · ' : '') + l + dq;
   }
   // ---------- loading ----------
   async load() {
     const gen = ++this.gen; const { symbol, tf } = this.state;
-    this.feed.close(); this.candles = []; this.trades = []; this.fp = new Map(); this.fpFrom = null; this.tape = []; this.ict = null; this.price = null; this.prevPrice = null; this.depth = null; this.ticker = null; this.extras = null;
+    this.feed.close(); this.liq.stop(); this.candles = []; this.trades = []; this.ticks = new Map(); this.fpCache = new Map(); this.tickQ = []; this.recon = new Map(); this.integ = { missed: 0, reloads: 0, lastAggId: null, issues: new Map(), gaps: 0, bad: 0 }; this.conf = null; this.tape = []; this.ict = null; this.price = null; this.prevPrice = null; this.depth = null; this.ticker = null; this.extras = null;
     this.loadMsg = 'Loading ' + symbol + ' ' + tf + '...'; this.chart.invalidate(); this.renderTape(); this.renderDom(); this.renderStats();
     this.setFeedStatus('connecting');
     let src;
@@ -54,10 +58,11 @@ class App {
     if (gen !== this.gen) return; this.src = src; this.renderFeed();
     try {
       const k = await fetchKlines(src, symbol, tf, 800); if (gen !== this.gen) return;
-      this.candles = k; this.price = k[k.length - 1].c; this.chart.resetView(); this.recomputeICT(true);
+      this.candles = k; this.price = k[k.length - 1].c; this.chart.resetView(); this.checkData(); this.recomputeICT(true);
     } catch (e) { if (gen !== this.gen) return; this.loadMsg = 'Could not load candles: ' + e.message; this.setFeedStatus('down'); this.chart.invalidate(); return; }
     this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
     this.feed.open(src, symbol, tf);
+    if (this.state.ind.liq) this.liq.start(src, symbol);
     this.loadLevels(gen); this.backfillTrades(gen); this.poll(); this.pollDepth();
   }
   showError(symbol, e) {
@@ -74,16 +79,12 @@ class App {
     } catch { this.levels = null; }
   }
   async backfillTrades(gen) {
-    try {
-      let all = [], end;
-      for (let p = 0; p < 8; p++) { const t = await fetchTrades(this.src, this.state.symbol, 1000, end); if (gen !== this.gen) return; if (!t.length) break; all = t.concat(all); end = t[0].t - 1; }
-      const ids = new Set(this.trades.map(t => t.id)); const merged = all.filter(t => !ids.has(t.id)).concat(this.trades); merged.sort((a, b) => a.t - b.t);
-      this.trades = merged; this.fpFrom = merged.length ? merged[0].t : null; this.rebuildFP(); this.tape = merged.slice(-40).reverse(); this.renderTape(); this.chart.invalidate();
-    } catch (e) { this.fpNote = 'Tick backfill failed: ' + e.message; }
+    try { const t = await fetchTrades(this.src, this.state.symbol, 40); if (gen !== this.gen) return; const ids = new Set(this.tape.map(x => x.id)); this.tape = this.tape.concat(t.filter(x => !ids.has(x.id))).sort((a, b) => b.t - a.t).slice(0, 40); this.renderTape(); } catch {}
+    const last = this.candles[this.candles.length - 1]; if (last) this.ensureTicks(last.t);
   }
   async loadMore() {
     if (this.loadingMore || this.replay || !this.candles.length || this.candles.length > 6000) return; this.loadingMore = true; const gen = this.gen;
-    try { const k = await fetchKlines(this.src, this.state.symbol, this.state.tf, 700, this.candles[0].t - 1); if (gen !== this.gen || !k.length) return; this.candles = k.concat(this.candles); this.chart.view.right += k.length; this.chart.cache = {}; this.recomputeICT(true); this.chart.invalidate(); } catch {} finally { this.loadingMore = false; }
+    try { const k = await fetchKlines(this.src, this.state.symbol, this.state.tf, 700, this.candles[0].t - 1); if (gen !== this.gen || !k.length) return; this.candles = k.concat(this.candles); this.chart.view.right += k.length; this.chart.cache = {}; this.checkData(); this.recomputeICT(true); this.chart.invalidate(); } catch {} finally { this.loadingMore = false; }
   }
   async poll() {
     const gen = this.gen, src = this.src; if (!src) return; const sym = this.state.symbol;
@@ -97,28 +98,49 @@ class App {
   // ---------- live ----------
   onKline(k) {
     if (this.replay) return; const c = this.candles; const last = c[c.length - 1]; if (!last) return;
-    if (k.t === last.t) c[c.length - 1] = k; else if (k.t > last.t) { c.push(k); if (this.chart.view.right > c.length - 3) this.chart.view.right += 1; this.chart.cache = {}; }
+    if (k.t === last.t) c[c.length - 1] = k; else if (k.t > last.t) { c.push(k); if (this.chart.view.right > c.length - 3) this.chart.view.right += 1; this.chart.cache = {}; this.checkData(); }
     this.chart.cache.key = null; this.setPrice(k.c); this.recomputeICT(k.t !== last.t); this.chart.invalidate();
   }
   onTrade(t) {
-    this.trades.push(t); if (this.trades.length > 90000) this.trades.splice(0, 20000);
-    this.addFP(t); this.tape.unshift(t); if (this.tape.length > 40) this.tape.length = 40; this.setPrice(t.p);
+    const I = this.integ; if (I.lastAggId != null && t.id > I.lastAggId + 1) { I.missed += t.id - I.lastAggId - 1; const ce = this.ticks.get(Math.floor(t.t / this.tfMs()) * this.tfMs()); if (ce && ce.status === 'full') { ce.status = 'stale'; I.reloads++; this.tickQ.push(Math.floor(t.t / this.tfMs()) * this.tfMs()); this.pumpTicks(); } }
+    I.lastAggId = t.id;
+    this.trades.push(t); if (this.trades.length > 20000) this.trades.splice(0, 5000);
+    const ct = Math.floor(t.t / this.tfMs()) * this.tfMs(); let e = this.ticks.get(ct); if (!e) { e = { arr: [], status: 'live', lastId: 0 }; this.ticks.set(ct, e); }
+    if (t.id > e.lastId) { e.arr.push([t.p, t.q, t.side === 'buy' ? 1 : 0, t.id]); e.lastId = t.id; }
+    this.liq.addTrade(t);
+    this.tape.unshift(t); if (this.tape.length > 40) this.tape.length = 40; this.setPrice(t.p);
     if (!this._tapeT) this._tapeT = setTimeout(() => { this._tapeT = null; this.renderTape(); }, 400);
     this.chart.invalidate();
   }
   setPrice(p) { this.prevPrice = this.price; this.price = p; this.checkAlerts(this.state.symbol, p); this.checkZones(p); }
-  // ---------- footprint ----------
-  fpStepNow() { const c = this.candles; if (c.length < 20) return 0; const a = wilderATR(c.slice(-120)); return nice(a[a.length - 1] * 0.1); }
-  rebuildFP() { if (!this.fpStep) this.fpStep = this.fpStepNow(); this.fp = new Map(); for (const t of this.trades) this.addFP(t); }
-  fpWant(rowRange) { const st = nice(Math.max(rowRange, 1e-8)); if (st !== this.fpStep) { this.fpStep = st; this.rebuildFP(); } }
-  addFP(t) {
-    if (!this.fpStep) { this.fpStep = this.fpStepNow(); if (!this.fpStep) return; }
-    const tf = this.tfMs(), ct = Math.floor(t.t / tf) * tf; let m = this.fp.get(ct); if (!m) { m = new Map(); this.fp.set(ct, m); }
-    const k = Math.floor(t.p / this.fpStep + 1e-9); let r = m.get(k); if (!r) { r = [0, 0]; m.set(k, r); } r[t.side === 'buy' ? 1 : 0] += t.q;
+  // ---------- footprint (ticks are loaded per candle on demand, real aggregated trades) ----------
+  fpWant(rowRange) { const st = nice(Math.max(rowRange, 1e-8)); if (st !== this.fpStep) { this.fpStep = st; this.fpCache = new Map(); } }
+  fpEnsure(i0, i1) { const c = this.candles; for (let i = Math.max(0, i0); i <= Math.min(c.length - 1, i1); i++) this.ensureTicks(c[i].t); }
+  ensureTicks(ct) { const e = this.ticks.get(ct); if (e && e.status !== 'live') return; if (this.tickQ.includes(ct)) return; this.tickQ.push(ct); this.pumpTicks(); }
+  pumpTicks() { while (this.tickBusy < 2 && this.tickQ.length) { const ct = this.tickQ.shift(); this.tickBusy++; this.loadTicks(ct).finally(() => { this.tickBusy--; this.pumpTicks(); }); } }
+  async loadTicks(ct) {
+    const gen = this.gen, tf = this.tfMs(), sym = this.state.symbol; let e = this.ticks.get(ct); if (!e) { e = { arr: [], status: 'loading', lastId: 0 }; this.ticks.set(ct, e); }
+    const had = e.arr.slice(); e.status = 'loading'; this.chart.invalidate();
+    const cd = this.candles.find(x => x.t === ct); if (cd && cd.n > 90000) { e.status = 'skipped'; e.note = cd.n.toLocaleString() + ' trades in this candle, too many to load on a phone'; this.chart.invalidate(); return; }
+    try {
+      const end = Math.min(ct + tf - 1, Date.now()); const r = await fetchTickWindow(this.src, sym, ct, end, 40); if (gen !== this.gen) return;
+      const maxId = r.ticks.length ? r.ticks[r.ticks.length - 1][3] : 0; const extra = e.arr.filter(x => x[3] > maxId); const merged = r.ticks.concat(extra);
+      e.arr = merged; e.lastId = merged.length ? merged[merged.length - 1][3] : 0; e.status = r.complete ? 'full' : 'partial'; if (!r.complete) e.note = 'first ' + r.ticks.length.toLocaleString() + ' trades only';
+      this.fpCache.delete(ct);
+      const cc = this.candles.find(x => x.t === ct); if (cc && r.complete && ct + tf <= Date.now() - 5000) this.recon.set(ct, { ...reconcile(cc, merged), t: ct });
+      if (this.ticks.size > 160) { const keep = this.candles.slice(-160).map(x => x.t); const view = this.candles.slice(Math.max(0, Math.floor(this.chart.iOf(0))), Math.ceil(this.chart.iOf(this.chart.plotW)) + 1).map(x => x.t); for (const k of [...this.ticks.keys()]) if (this.ticks.size > 160 && !view.includes(k) && k !== this.candles[this.candles.length - 1].t) this.ticks.delete(k); }
+    } catch (err) { if (gen !== this.gen) return; e.status = 'error'; e.note = err.message; e.arr = had; setTimeout(() => { const x = this.ticks.get(ct); if (x && x.status === 'error' && gen === this.gen) { x.status = 'live'; } }, 15000); }
+    this.chart.invalidate(); this.renderData();
+  }
+  rowsFor(ct) {
+    const e = this.ticks.get(ct); if (!e || !e.arr.length || !this.fpStep) return null; const c = this.fpCache.get(ct); if (c && c.step === this.fpStep && c.n === e.arr.length) return c.rows;
+    const m = new Map(), st = this.fpStep; for (const t of e.arr) { const k = Math.floor(t[0] / st + 1e-9); let r = m.get(k); if (!r) { r = [0, 0]; m.set(k, r); } r[t[2]] += t[1]; }
+    const rows = [...m.entries()].sort((a, b) => a[0] - b[0]); this.fpCache.set(ct, { step: st, n: e.arr.length, rows }); return rows;
   }
   drawFootprint(g, ch, i, b, x, bw, th) {
-    const m = this.fp.get(b.t); if (!m || !this.fpStep) return false;
-    const partial = this.fpFrom != null && b.t < this.fpFrom; const rows = [...m.entries()].sort((a, c) => a[0] - c[0]); if (!rows.length) return false;
+    const e = this.ticks.get(b.t); const rows = this.rowsFor(b.t);
+    if (!rows || !rows.length || (e && e.status === 'loading' && !e.arr.length)) { this.ensureTicks(b.t); const msg = !e ? 'loading' : e.status === 'skipped' ? 'too heavy' : e.status === 'error' ? 'retrying' : 'loading'; g.font = '9px system-ui'; g.fillStyle = th.text; g.textAlign = 'center'; g.fillText(msg, x, ch.ymap(b.l) + 11); g.textAlign = 'left'; return false; }
+    if (e.status === 'skipped') { g.font = '9px system-ui'; g.fillStyle = th.text; g.textAlign = 'center'; g.fillText('too heavy', x, ch.ymap(b.l) + 11); g.textAlign = 'left'; return false; }
     let mx = 0, poc = rows[0][0], pv = 0; for (const [k, r] of rows) { const v = r[0] + r[1]; if (v > mx) mx = v; if (v > pv) { pv = v; poc = k; } }
     const w = bw * 0.92, left = x - w / 2, step = this.fpStep;
     for (const [k, r] of rows) {
@@ -128,15 +150,74 @@ class App {
       if (h >= 9) { g.font = (h >= 12 ? 10 : 8) + 'px ui-monospace,monospace'; g.textBaseline = 'middle'; const imb = r[1] >= 3 * r[0] && r[1] > 0, imbS = r[0] >= 3 * r[1] && r[0] > 0; g.fillStyle = imbS ? '#ff8a80' : th.ax; g.textAlign = 'right'; g.fillText(fmtV(r[0]), x - 3, y1 + h / 2); g.fillStyle = imb ? '#69f0ae' : th.ax; g.textAlign = 'left'; g.fillText(fmtV(r[1]), x + 3, y1 + h / 2); }
     }
     g.strokeStyle = th.cross; g.lineWidth = 1; g.beginPath(); g.moveTo(x, ch.ymap(b.h)); g.lineTo(x, ch.ymap(b.l)); g.stroke();
-    const d = b.d; g.font = 'bold 10px ui-monospace,monospace'; g.textAlign = 'center'; g.fillStyle = d >= 0 ? th.up : th.dn; g.fillText('Δ ' + fmtV(d), x, ch.ymap(b.l) + 11);
-    if (partial || (this.fpFrom != null && b.t < this.fpFrom + 0 && false)) { g.fillStyle = th.text; g.fillText('partial', x, ch.ymap(b.h) - 8); }
+    let buy = 0, sell = 0; for (const t of e.arr) { if (t[2]) buy += t[1]; else sell += t[1]; } const d = e.status === 'full' || e.status === 'live' ? buy - sell : b.d;
+    g.font = 'bold 10px ui-monospace,monospace'; g.textAlign = 'center'; g.fillStyle = d >= 0 ? th.up : th.dn; g.fillText('Δ ' + fmtV(d), x, ch.ymap(b.l) + 11);
+    if (e.status !== 'full') { g.fillStyle = th.gold; g.font = '9px system-ui'; g.fillText(e.status === 'partial' ? 'partial' : e.status === 'loading' ? 'loading' : e.status === 'live' ? 'partial (live only)' : e.status, x, ch.ymap(b.h) - 8); }
     g.textAlign = 'left'; return true;
   }
+  checkData() { const r = checkCandles(this.candles, this.tfMs()); this.integ.issues = r.issues; this.integ.gaps = r.gaps; this.integ.bad = r.bad; this.renderFeed(); }
   // ---------- ICT ----------
   recomputeICT(force) {
     const now = Date.now(); if (!force && now - this.ictT < 2500) return; this.ictT = now;
     if (!this.state.ind.ict) { this.ict = null; return; }
-    const c = this.visibleCandles(); this.ict = computeICT(c, this.tfMs(), this.levels); this.renderIndCounts();
+    const c = this.visibleCandles(); this.ict = computeICT(c, this.tfMs(), this.levels); this.renderIndCounts(); this.updateConf();
+  }
+  updateConf() {
+    const c = this.visibleCandles(); const sc = sessionCVD(c, this.tfMs()); this.conf = this.ict ? confluence(c, this.ict, this.levels, sc, this.tfMs()) : null; this.renderChip(); this.renderWhy();
+  }
+  renderChip() {
+    const el = $('#chip'); if (!el) return; const k = this.conf; if (!k) { el.innerHTML = '<span class="muted">ICT confluence: waiting for data or ICT layers off</span>'; return; }
+    el.className = k.label === 'NO EDGE' ? 'flat' : k.dir === 'bull' ? 'long' : 'short';
+    el.innerHTML = `<b>${k.label}</b> <i>${k.score}</i> <span>${esc(k.why)}</span>`;
+  }
+  renderWhy() {
+    const el = $('#pane-why'); if (!el) return; const k = this.conf; if (!k) { el.innerHTML = '<div class="note">Needs 40+ candles and ICT layers switched on.</div>'; return; }
+    const row = f => `<div class="kv"><span>${f.name} <em>+${f.pts}</em></span><span>${esc(f.text)}</span></div>`;
+    const d = k.dec;
+    el.innerHTML = `<div class="grp">${k.label} · score ${k.score}/100 · other side ${k.oppScore}</div><div class="why">${esc(k.why)}</div>${k.factors.map(row).join('') || '<div class="note">No aligned factors.</div>'}
+    <div class="grp">Levels</div>${k.inv != null ? `<div class="kv"><span>Invalidation</span><span>${fmt(k.inv, d)}</span></div>` : ''}${k.tgt != null ? `<div class="kv"><span>Target (nearest liquidity)</span><span>${fmt(k.tgt, d)}</span></div>` : ''}${k.rr != null ? `<div class="kv"><span>Reward : risk</span><span>${k.rr.toFixed(2)}</span></div>` : ''}${k.inv == null && k.tgt == null ? '<div class="note">No clean invalidation or target on this chart.</div>' : ''}
+    <div class="grp">Against (${k.dir === 'bull' ? 'short' : 'long'} side)</div>${k.opp.map(row).join('') || '<div class="note">Nothing aligned against.</div>'}
+    <div class="note">Rules-based checklist: structure, liquidity sweep, premium/discount + OTE, order block / FVG, killzone, order flow, day bias. It is a way to read the chart, not a signal, and it has not been backtested.</div>`;
+  }
+  renderData() {
+    const el = $('#pane-data'); if (!el || el.hidden) return; const I = this.integ; const c = this.candles; const tag = (t, x) => `<span class="tag ${t}">${t}</span> ${x}`;
+    const sym = SYMBOLS.find(x => x.id === this.state.symbol); const lq = this.liq.stats(); const sk = this.feed.skew;
+    const full = [...this.ticks.values()].filter(e => e.status === 'full').length, part = [...this.ticks.values()].filter(e => e.status === 'partial' || e.status === 'live').length, skip = [...this.ticks.values()].filter(e => e.status === 'skipped').length;
+    const rec = [...this.recon.values()].sort((a, b) => b.t - a.t); const bad = rec.filter(r => !r.ok);
+    const verdict = (I.bad || bad.length || this.feedStatus !== 'live') ? ['warn', 'CHECK'] : I.gaps ? ['warn', 'GAPS'] : ['ok', 'CLEAN'];
+    el.innerHTML = `<div class="grp">Verdict <b class="v ${verdict[0]}">${verdict[1]}</b></div>
+    <div class="kv"><span>Source</span><span>${this.src ? esc(this.src.label) : 'none'}</span></div>
+    <div class="kv"><span>Feed</span><span>${esc(this.feedStatus)}${sk != null ? ' · ~' + Math.max(0, Math.round(sk)) + ' ms behind' : ''}</span></div>
+    <div class="kv"><span>Candles loaded</span><span>${c.length}</span></div>
+    <div class="kv"><span>Missing candles</span><span class="${I.gaps ? 'd' : 'u'}">${I.gaps}</span></div>
+    <div class="kv"><span>Malformed candles</span><span class="${I.bad ? 'd' : 'u'}">${I.bad}</span></div>
+    <div class="kv"><span>Trades missed on stream</span><span class="${I.missed ? 'd' : 'u'}">${I.missed}${I.reloads ? ' (reloaded ' + I.reloads + 'x)' : ''}</span></div>
+    <div class="kv"><span>Candles with full ticks</span><span>${full}${part ? ' · ' + part + ' partial' : ''}${skip ? ' · ' + skip + ' too heavy' : ''}</span></div>
+    <div class="kv"><span>Ticks vs exchange candle</span><span class="${bad.length ? 'd' : 'u'}">${rec.length ? (rec.length - bad.length) + '/' + rec.length + ' match' : 'no closed candle checked yet'}</span></div>
+    ${rec.slice(0, 4).map(r => `<div class="kv"><span>${new Date(r.t).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}</span><span class="${r.ok ? 'u' : 'd'}">vol ${r.volDiffPct >= 0 ? '+' : ''}${r.volDiffPct.toFixed(3)}% · delta ${r.deltaDiffPct >= 0 ? '+' : ''}${r.deltaDiffPct.toFixed(3)}%</span></div>`).join('')}
+    <div class="grp">What is real</div>
+    <div class="leg">${tag('REAL', 'Candles, volume, taker buy/sell (' + (this.src ? esc(this.src.label) : 'exchange') + ')')}</div>
+    <div class="leg">${tag('REAL', 'Delta and CVD, from exchange taker-buy volume')}</div>
+    <div class="leg">${tag('REAL', 'Footprint cells, from aggregated trades, full candles only')}</div>
+    <div class="leg">${tag('PARTIAL', 'Footprint on a candle that started before you opened it, or has too many trades: labelled on the chart')}</div>
+    <div class="leg">${tag('REAL', 'Liquidity map: order book from the exchange, sampled every 2 s since this page opened' + (lq.cover ? ', covers -' + lq.cover.loPct.toFixed(2) + '% / +' + lq.cover.hiPct.toFixed(2) + '% of price' : '') + '. Not available before that.')}</div>
+    <div class="leg">${tag('DERIVED', 'ICT layers, session CVD, anchored VWAP, pulled-wall tags, confluence score: computed here from the real data above')}</div>
+    ${sym && sym.id === 'PAXGUSDT' ? `<div class="leg">${tag('PROXY', 'PAXG is a gold token traded on crypto exchanges, not spot gold (XAU). It follows gold closely but is a different market, so volumes and weekend moves differ.')}</div>` : ''}
+    ${this.src && this.src.key === 'spot' ? `<div class="leg">${tag('NA', 'Funding rate, open interest, mark price: futures only. Binance Futures is not reachable from here, so they are not shown.')}</div>` : ''}
+    <div class="note">Nothing on this screen is generated or simulated. If a number cannot be real, it is labelled or left out.</div>`;
+  }
+  renderLiq() {
+    const el = $('#pane-liq'); if (!el || el.hidden) return; const L = this.liq.stats(); const d = this.price ? decimals(this.price) : 2; const now = Date.now();
+    if (!this.state.ind.liq) { el.innerHTML = '<div class="note">Liquidity map is off. Turn it on in Indicators.</div>'; return; }
+    const evs = this.liq.events.slice(-8).reverse();
+    el.innerHTML = `<div class="kv"><span>Order book</span><span class="${L.status === 'live' ? 'u' : 'd'}">${L.status}${L.err ? ' · ' + esc(L.err) : ''}</span></div>
+    <div class="kv"><span>Collecting since</span><span>${L.since ? new Date(L.since).toLocaleTimeString([], { hour12: false }) + ' (' + L.snaps + ' snapshots)' : 'n/a'}</span></div>
+    <div class="kv"><span>Book covers</span><span>${L.cover ? '-' + L.cover.loPct.toFixed(2) + '% / +' + L.cover.hiPct.toFixed(2) + '%' : 'n/a'}</span></div>
+    <div class="kv"><span>Bin size</span><span>${L.bin || 'n/a'}</span></div>
+    <div class="kv"><span>Walls pulled as price approached</span><span class="d">${L.pulled}</span></div><div class="kv"><span>Walls cancelled far from price</span><span>${L.cancelled}</span></div><div class="kv"><span>Walls filled by trades</span><span>${L.filled}</span></div><div class="kv"><span>Book resyncs</span><span>${L.resyncs}</span></div>
+    <div class="grp">Biggest walls now</div>${L.walls.map(w => `<div class="kv"><span class="${w.side === 'b' ? 'u' : 'd'}">${w.side === 'b' ? 'bid' : 'ask'} ${fmt(w.p, d)}</span><span>${fmtV(w.q)} · ${Math.round(w.age / 1000)}s</span></div>`).join('') || '<div class="note">None above the wall threshold.</div>'}
+    <div class="grp">Recent wall events (fade over ~4 min)</div>${evs.map(e => `<div class="kv"><span class="${e.kind === 'pulled' ? 'd' : e.kind === 'filled' ? 'u' : ''}">${e.kind.toUpperCase()} ${e.side === 'b' ? 'bid' : 'ask'} ${fmt(e.p, d)}</span><span style="opacity:${Math.max(.35, this.liq.ghostAlpha(e, now)).toFixed(2)}">${fmtV(e.qty)} · lived ${Math.round(e.life / 1000)}s</span></div>`).join('') || '<div class="note">None yet. History starts when the page opens.</div>'}
+    <div class="note">A wall is a bin far above the typical size. "Pulled" means it shrank by 75%+ with little trading at that price while price was within about 0.06% of it. That pattern is typical of spoofing, but the data cannot prove intent. Walls cancelled farther away are ordinary repositioning and only counted. On the chart, pulled walls leave a ghost line that fades.</div>`;
   }
   checkZones(p) {
     if (!this.state.zoneAlerts || !this.ict || !this.state.ind.ict || this.replay) return; const z = this.state.ict;
@@ -167,7 +248,8 @@ class App {
   setTool(t) { this.state.tool = t; this.chart.pending = null; this.chart.brushing = false; this.renderTools(); this.chart.cv.style.cursor = t === 'cursor' ? 'default' : 'crosshair'; this.chart.invalidate(); }
   toolDown(px, s) {
     const t = this.state.tool, ch = this.chart; this.downPx = px; this.lastPx = px;
-    if (t === 'hline') { this.addDrawing({ type: 'hline', pts: [s] }); this.setTool('cursor'); }
+    if (t === 'avwap') { (this.state.avwaps[this.state.symbol] ||= []).push({ t: s.t, id: uid() }); this.save(); this.setTool('cursor'); this.toast('Anchored VWAP added at ' + new Date(s.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })); }
+    else if (t === 'hline') { this.addDrawing({ type: 'hline', pts: [s] }); this.setTool('cursor'); }
     else if (t === 'text') { this.askText(px, s); }
     else if (t === 'eraser') { const h = ch.hit(px.x, px.y); if (h) this.removeDrawing(h.id); }
     else if (t === 'brush') { ch.pending = { type: 'brush', pts: [s] }; ch.brushing = true; }
@@ -217,8 +299,8 @@ class App {
     el.innerHTML = (last ? kv('Last', fmt(this.price ?? last.c, d)) : '') + (t ? kv('24h change', (t.chg >= 0 ? '+' : '') + t.chg.toFixed(2) + '%', t.chg >= 0 ? 'u' : 'd') + kv('24h high / low', fmt(t.hi, d) + ' / ' + fmt(t.lo, d)) + kv('24h volume', fmtV(t.vol)) : '') +
       (last ? kv('Candle delta', (last.d >= 0 ? '+' : '') + fmtV(last.d), last.d >= 0 ? 'u' : 'd') + kv('Candle buy / sell', fmtV(last.bv) + ' / ' + fmtV(last.sv)) + kv('CVD (loaded bars)', fmtV(cvd), cvd >= 0 ? 'u' : 'd') : '') +
       (this.extras ? kv('Mark', this.extras.mark ? fmt(this.extras.mark, d) : 'n/a') + kv('Funding (8h)', this.extras.funding != null ? (this.extras.funding * 100).toFixed(4) + '%' : 'n/a') + kv('Open interest', this.extras.oi != null ? fmtV(this.extras.oi) : 'n/a') : '') +
-      kv('Source', this.src ? this.src.label : 'none') + kv('Ticks in memory', this.trades.length.toLocaleString()) + kv('Footprint step', this.fpStep ? this.fpStep : 'n/a') +
-      `<div class="note">Delta = taker buy volume minus taker sell volume, from the exchange. ${this.src && this.src.key === 'spot' ? 'Spot feed active: futures-only fields (mark, funding, open interest) are not available.' : ''} Footprint covers ticks since ${this.fpFrom ? new Date(this.fpFrom).toLocaleTimeString([], { hour12: false }) : 'load'}; older candles show plain candles.</div>`;
+      kv('Source', this.src ? this.src.label : 'none') + kv('Ticks in memory', [...this.ticks.values()].reduce((a, e) => a + e.arr.length, 0).toLocaleString()) + kv('Footprint step', this.fpStep ? this.fpStep : 'n/a') +
+      `<div class="note">Delta = taker buy volume minus taker sell volume, from the exchange. ${this.src && this.src.key === 'spot' ? 'Spot feed active: futures-only fields (mark, funding, open interest) are not available.' : ''} Footprint ticks load per candle when you zoom in; a candle with too many trades is labelled instead of faked.</div>`;
   }
   renderAlerts() {
     const el = $('#pane-alerts'); const p = this.price, d = p ? decimals(p) : 2;
@@ -245,7 +327,7 @@ class App {
     const tfs = $('#tfs'); tfs.innerHTML = Object.keys(TFS).map(t => `<button data-tf="${t}">${t}</button>`).join('');
     tfs.onclick = e => { const t = e.target.dataset.tf; if (!t) return; this.exitReplay(); this.state.tf = t; this.save(); this.renderTf(); this.load(); this.renderIndCounts(); };
     this.renderTf();
-    $('#ctype').value = this.state.chartType; $('#ctype').onchange = e => { this.state.chartType = e.target.value; this.save(); if (e.target.value === 'footprint') { this.chart.view.barW = Math.max(this.chart.view.barW, 60); this.chart.invalidate(); } this.chart.invalidate(); };
+    $('#ctype').value = this.state.chartType; $('#ctype').onchange = e => { this.state.chartType = e.target.value; this.save(); if (e.target.value === 'footprint') { this.chart.view.barW = Math.max(this.chart.view.barW, 76); this.chart.invalidate(); } this.chart.invalidate(); };
     $('#bInd').onclick = () => this.openIndicators(); $('#bWs').onclick = () => this.openWorkspace();
     $('#bRep').onclick = () => this.replay ? this.exitReplay() : this.startReplay();
     $('#rpPlay').onclick = () => this.replayPlay(); $('#rpStep').onclick = () => { this.replayPause(); this.replayStep(); }; $('#rpExit').onclick = () => this.exitReplay();
@@ -254,14 +336,15 @@ class App {
     const tzb = $('#bTz'); tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; tzb.onclick = () => { this.state.tz = this.state.tz === 'UTC' ? 'local' : 'UTC'; tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; this.save(); this.chart.invalidate(); };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('data'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
     this.renderTools(); this.renderAlerts(); this.renderTape();
   }
   renderTf() { document.querySelectorAll('#tfs button').forEach(b => b.classList.toggle('on', b.dataset.tf === this.state.tf)); }
   renderTools() {
-    const T = [['cursor', '⌖', 'Cursor'], ['hline', '―', 'Horizontal line'], ['trend', '╱', 'Trend line'], ['rect', '▭', 'Rectangle'], ['text', 'T', 'Text'], ['brush', '✎', 'Brush'], ['measure', '↔', 'Measure'], ['eraser', '⌫', 'Eraser'], ['clear', '🗑', 'Clear all drawings on this symbol']];
+    const T = [['cursor', '⌖', 'Cursor'], ['avwap', 'A', 'Anchored VWAP: tap a candle'], ['hline', '―', 'Horizontal line'], ['trend', '╱', 'Trend line'], ['rect', '▭', 'Rectangle'], ['text', 'T', 'Text'], ['brush', '✎', 'Brush'], ['measure', '↔', 'Measure'], ['eraser', '⌫', 'Eraser'], ['clear', '🗑', 'Clear all drawings on this symbol']];
     $('#tools').innerHTML = T.map(([id, ic, t]) => `<button data-tool="${id}" title="${t}" aria-label="${t}" class="${this.state.tool === id ? 'on' : ''}">${ic}</button>`).join('');
     $('#tools').onclick = e => { const id = e.target.closest('button')?.dataset.tool; if (!id) return; if (id === 'clear') { if (this.drawingsFor().length && confirm('Delete all drawings on ' + this.state.symbol + '?')) { this.state.drawings[this.state.symbol] = []; this.save(); this.chart.invalidate(); } return; } this.setTool(id); };
   }
@@ -271,7 +354,9 @@ class App {
     this._sheet = 'ind'; const s = this.state, cnt = this.ictCounts(); const chk = (grp, key, label, extra = '', off = false) => `<label class="chk${off ? ' off' : ''}"><input type="checkbox" data-g="${grp}" data-k="${key}" ${s[grp][key] ? 'checked' : ''}> ${label}<em>${extra}</em></label>`;
     const intraday = TFS[s.tf] <= 3600e3; const n = k => s.ind.ict && cnt[k] !== undefined ? (cnt[k] ? cnt[k] + ' in range' : 'none in range') : '';
     $('#sheetT').textContent = 'Indicators'; $('#sheetB').innerHTML =
-      `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'cvd', 'CVD (cumulative delta)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
+      `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'scvd', 'Session CVD (resets Asia / London / NY)', intraday ? '' : 'needs 1h or lower', !intraday)}${chk('ind', 'cvd', 'CVD (from first loaded bar)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
+      <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}
+      ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
       <div class="note">Each layer below works on its own. The master switch hides all of them, and the boxes stay ticked.</div>
@@ -280,7 +365,8 @@ class App {
       <label class="chk"><input type="checkbox" id="zoneAl" ${s.zoneAlerts ? 'checked' : ''}> Zone alerts (only for layers shown)</label>
       <div class="row"><button class="btn" id="icReset">Reset ICT layers</button></div>`;
     $('#sheet').hidden = false;
-    $('#sheetB').querySelectorAll('input[data-g]').forEach(i => i.onchange = () => { s[i.dataset.g][i.dataset.k] = i.checked; this.save(); this.recomputeICT(true); this.chart.cache = {}; this.chart.invalidate(); if (i.dataset.k === 'ict') this.openIndicators(true); });
+    $('#sheetB').querySelectorAll('input[data-g]').forEach(i => i.onchange = () => { s[i.dataset.g][i.dataset.k] = i.checked; this.save(); this.recomputeICT(true); this.chart.cache = {}; this.chart.invalidate(); if (i.dataset.k === 'ict') this.openIndicators(true); if (i.dataset.k === 'liq') { if (i.checked && this.src) this.liq.start(this.src, s.symbol); else this.liq.stop(); this.renderLiq(); } });
+    $('#sheetB').querySelectorAll('[data-avrm]').forEach(b => b.onclick = () => { s.avwaps[s.symbol] = (s.avwaps[s.symbol] || []).filter(a => a.id !== b.dataset.avrm); this.save(); this.chart.invalidate(); this.openIndicators(true); });
     $('#zoneAl').onchange = e => { s.zoneAlerts = e.target.checked; this.save(); };
     $('#icReset').onclick = () => { s.ict = clone(DEF.ict); s.ind.ict = true; this.save(); this.recomputeICT(true); this.chart.invalidate(); this.openIndicators(true); };
   }
