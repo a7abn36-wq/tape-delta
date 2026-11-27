@@ -374,7 +374,7 @@ class App {
     else if (M && !M.err) h += `<div class="grp">Power of 3 (AMD)</div><div class="note">N/A: ${T('no complete Asia session in the loaded candles.', 'مفيش جلسة آسيا كاملة في الشموع المحملة.')}</div>`;
     el.innerHTML = h; $('#mtfRun').onclick = () => this.runMTF(); if (!M && !this.mtfBusy) this.runMTF();
   }
-  getMagnets() { if (!this.ict || !this.candles.length) return null; const k = this.candles.length + ':' + this.candles[this.candles.length - 1].t + ':' + Math.round(this.price || 0); if (this._mgK === k) return this._mg; const w = this.liq && this.state.ind.liq ? this.liq.stats().walls : []; this._mg = magnets(this.candles, this.ict, this.levels, w, this.tfMs()); this._mgK = k; return this._mg; }
+  getMagnets() { if (!this.candles.length) return null; const k = this.state.ind.ict ? 'i' : 'n', k0 = this.candles.length + ':' + this.candles[this.candles.length - 1].t + ':' + Math.round(this.price || 0); const kk = k + k0; if (this._mgK === kk) return this._mg; const ict = this.ict || computeICT(this.candles, this.tfMs(), this.levels); const w = this.liq && this.state.ind.liq ? this.liq.stats().walls : []; this._mg = magnets(this.candles, ict, this.levels, w, this.tfMs()); this._mgK = kk; return this._mg; }
   magnetLines() { if (!this.state.ind.magnet) return []; const m = this.getMagnets(); if (!m) return []; return [m.nearUp && { p: m.nearUp.p, name: 'MAG ' + m.nearUp.score }, m.nearDown && { p: m.nearDown.p, name: 'MAG ' + m.nearDown.score }].filter(Boolean); }
   renderMag() {
     const el = $('#pane-mag'); if (!el || el.hidden) return; el.setAttribute('data-noi18n', ''); const ar = isAr(), T = (e, x) => ar ? x : e, m = this.getMagnets(), d = this.price ? decimals(this.price) : 2;
