@@ -88,3 +88,5 @@ body.bgimg #top,body.bgimg #tools{background:rgba(12,16,24,.86)}
 #bmRead{font-size:12.5px;line-height:1.6;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}#bmRead div{margin:2px 0}.bmnote{font-size:11px;color:var(--mut)}
 
 #bmStat{font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}#bmStat table{width:100%;border-collapse:collapse;margin:4px 0;font-size:11.5px}#bmStat td,#bmStat th{padding:2px 4px;text-align:center;border-bottom:1px solid var(--line)}#bmStat th{color:var(--mut);font-weight:600}
+
+#bm .btn{min-height:38px;min-width:42px;padding:4px 8px;font-size:13px}#bm select{min-height:38px;font-size:13px}#bmCv{touch-action:none}

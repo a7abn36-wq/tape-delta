@@ -24,13 +24,13 @@ const T = {
   keyEv: ['events P/C/A/X (inference)', 'أحداث P/C/A/X (استنتاج)'],
   keyLv: ['VWAP / POC / VAH / VAL (derived)', 'VWAP / POC / VAH / VAL (مشتقة)'],
   cvdT: ['CVD (net market buying since recording)', 'CVD (صافي الشراء بالسوق من بداية التسجيل)'],
-  tapHint: ['Tap the map, a bubble or a key item for an explanation.', 'اضغط على الخريطة أو فقاعة أو عنصر في المفتاح للشرح.']
+  tapHint: ['Drag to pan time and price, pinch or +/- to zoom, tap a cell, bubble or key item for an explanation. "live" returns to now.', 'اسحب عشان تحرك الوقت والسعر، قرّب بصباعين أو بـ +/-، واضغط على خلية أو فقاعة أو عنصر للشرح. زر live بيرجعك للحظة الحالية.']
 };
 
 const SRC = SRC_BN;
 export class Bookmap {
   constructor(app) {
-    this.app = app; this.wm = 15; this.rp = 0.0025; this.sym = null; this.open_ = false; this.lm = null; this.trades = []; this.cvd = []; this.cum = 0; this.dirty = true; this.lastDraw = 0;
+    this.app = app; this.tf = 5000; this.colW = 8; this.panX = 0; this.offP = 0; this.show = { tr: true, ev: true, lv: false }; this.rp = 0.0025; this.sym = null; this.open_ = false; this.lm = null; this.trades = []; this.cvd = []; this.cum = 0; this.dirty = true; this.lastDraw = 0;
     this.hits = []; this.ws2 = null; this.tmode = 'ws'; this.lastAgg = 0; this.tws = 0; this._buildUI();
   }
   L(k) { return T[k][isAr() ? 1 : 0]; }
@@ -39,17 +39,27 @@ export class Bookmap {
     $('#bmX').onclick = () => this.close();
     $('#bmSym').onchange = e => this.start(e.target.value);
     this.srcKey = 'bn'; $('#bmSrc').onchange = e => { this.srcKey = e.target.value; this.start(this.sym || $('#bmSym').value); this._labels(); };
-    el.querySelectorAll('[data-wm]').forEach(b => b.onclick = () => { this.wm = +b.dataset.wm; this._ctl(); this.dirty = true; this.draw(); });
-    el.querySelectorAll('[data-rp]').forEach(b => b.onclick = () => { this.rp = +b.dataset.rp; this._ctl(); this.dirty = true; this.draw(); });
+    el.querySelectorAll('[data-tf]').forEach(b => b.onclick = () => { this.tf = +b.dataset.tf; this.colW = this.tf >= 60000 ? 14 : this.tf >= 5000 ? 8 : 5; this.panX = 0; this._ctl(); this.dirty = true; this.draw(); });
+    el.querySelectorAll('[data-rp]').forEach(b => b.onclick = () => { this.rp = +b.dataset.rp; this.offP = 0; this._ctl(); this.dirty = true; this.draw(); });
+    el.querySelectorAll('[data-tg]').forEach(b => b.onclick = () => { this.show[b.dataset.tg] = !this.show[b.dataset.tg]; this._ctl(); this.dirty = true; this.draw(); });
+    $('#bmZm').onclick = () => { this._zoom(1 / 1.4); }; $('#bmZp').onclick = () => { this._zoom(1.4); };
+    $('#bmHome').onclick = () => { this.panX = 0; this.offP = 0; this.dirty = true; this.draw(); };
     el.querySelectorAll('[data-key]').forEach(b => b.onclick = () => this.explain(b.dataset.key));
-    let down = null;
-    this.cv.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
-    this.cv.addEventListener('pointerup', e => { if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8) { const r = this.cv.getBoundingClientRect(); this.tap(e.clientX - r.left, e.clientY - r.top); } down = null; });
+    const P = new Map(); let g0 = null, moved = false;
+    const cv = this.cv;
+    cv.addEventListener('pointerdown', e => { try { cv.setPointerCapture(e.pointerId); } catch { } P.set(e.pointerId, { x: e.clientX, y: e.clientY }); moved = false; g0 = P.size === 2 ? { d: Math.hypot(...[...P.values()].reduce((a, p, i) => i ? [a[0] - p.x, a[1] - p.y] : [p.x, p.y], [])), cw: this.colW } : null; this._down = { x: e.clientX, y: e.clientY }; });
+    cv.addEventListener('pointermove', e => { const p = P.get(e.pointerId); if (!p) return; const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+      if (P.size >= 2 && g0) { const v = [...P.values()]; const d = Math.hypot(v[0].x - v[1].x, v[0].y - v[1].y); this.colW = Math.max(2, Math.min(40, g0.cw * d / (g0.d || 1))); moved = true; this.dirty = true; this.draw(); return; }
+      if (this._down && Math.hypot(e.clientX - this._down.x, e.clientY - this._down.y) > 8) moved = true; if (!moved) return;
+      const vv = this.v; if (!vv) return; this.panX = Math.max(0, this.panX + dx); const span = vv.hi - vv.lo; this.offP = Math.max(-span * 3, Math.min(span * 3, this.offP + dy / vv.heatH * span)); this.dirty = true; this.draw(); });
+    const up = e => { const had = P.has(e.pointerId); P.delete(e.pointerId); if (!had) return; if (P.size < 2) g0 = null; if (!moved && P.size === 0 && this._down) { const r = cv.getBoundingClientRect(); this.tap(e.clientX - r.left, e.clientY - r.top); } if (P.size === 0) this._down = null; };
+    cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', e => { P.delete(e.pointerId); g0 = null; this._down = null; });
     new ResizeObserver(() => { this.dirty = true; this.draw(); }).observe($('#bmWrap'));
   }
-  _ctl() { this.el.querySelectorAll('[data-wm]').forEach(b => b.classList.toggle('on', +b.dataset.wm === this.wm)); this.el.querySelectorAll('[data-rp]').forEach(b => b.classList.toggle('on', +b.dataset.rp === this.rp)); }
+  _zoom(f) { this.colW = Math.max(2, Math.min(40, this.colW * f)); this.dirty = true; this.draw(); }
+  _ctl() { this.el.querySelectorAll('[data-tf]').forEach(b => b.classList.toggle('on', +b.dataset.tf === this.tf)); this.el.querySelectorAll('[data-rp]').forEach(b => b.classList.toggle('on', +b.dataset.rp === this.rp)); this.el.querySelectorAll('[data-tg]').forEach(b => b.classList.toggle('on', !!this.show[b.dataset.tg])); }
   _labels() {
-    const ar = isAr(); $('#bmT').textContent = this.L('title'); $('#bmX').textContent = this.L('close');
+    const ar = isAr(); $('#bmX').textContent = isAr() ? 'رجوع' : 'Back';
     $('#bmKey').innerHTML = `<button class="bmk" data-key="bid"><i style="background:#26e6a0"></i>${this.L('keyBid')}</button><button class="bmk" data-key="ask"><i style="background:#ff5a44"></i>${this.L('keyAsk')}</button><button class="bmk" data-key="buy"><i class="ring" style="border-color:#26e6a0"></i>${this.L('keyBuy')}</button><button class="bmk" data-key="sell"><i class="ring" style="border-color:#ff5a44"></i>${this.L('keySell')}</button><button class="bmk" data-key="line"><i style="background:#e8f1ff;height:2px"></i>${this.L('keyLine')}</button><button class="bmk" data-key="int"><i class="grad"></i>${this.L('keyInt')}</button><button class="bmk" data-key="ev"><i style="background:#f2c14e"></i>${this.L('keyEv')}</button><button class="bmk" data-key="lv"><i style=\"background:#ff9ff3\"></i>${this.L('keyLv')}</button>`;
     $('#bmKey').querySelectorAll('[data-key]').forEach(b => b.onclick = () => this.explain(b.dataset.key));
     $('#bmLbl').innerHTML = `<span class="bmc ok">${(this.src || SRC_BN).label}: ${this.L('real')}</span><span class="bmc part">${this.L('partial')}</span><span class="bmc ok">${this.L('tradesReal')}</span>`;
@@ -105,11 +115,17 @@ export class Bookmap {
     return out;
   }
   _levels() {
-    const tS = Date.now() - this.wm * 60e3, tr = this.trades.filter(x => x.t >= tS); if (tr.length < 30) return null;
+    const tS = this.v ? Math.max(this.v.tS, Date.now() - 35 * 60e3) : Date.now() - 15 * 60e3, tr = this.trades.filter(x => x.t >= tS); if (tr.length < 30) return null;
     let sv = 0, spv = 0, mn = Infinity, mx = -Infinity; for (const x of tr) { sv += x.q; spv += x.p * x.q; if (x.p < mn) mn = x.p; if (x.p > mx) mx = x.p; } if (!(mx > mn)) return null;
     const nb = 40, step = (mx - mn) / nb, vol = new Array(nb + 1).fill(0); for (const x of tr) vol[Math.min(nb, Math.floor((x.p - mn) / step))] += x.q;
     let poc = 0; vol.forEach((v, i) => { if (v > vol[poc]) poc = i; }); let lo = poc, hi = poc, acc = vol[poc]; while (acc < sv * 0.7 && (lo > 0 || hi < nb)) { const dn = lo > 0 ? vol[lo - 1] : -1, up = hi < nb ? vol[hi + 1] : -1; if (up >= dn) { hi++; acc += vol[hi]; } else { lo--; acc += vol[lo]; } }
     return { span: Math.max(1, Math.round((Date.now() - tr[0].t) / 60000)), vwap: spv / sv, poc: mn + (poc + .5) * step, val: mn + lo * step, vah: mn + (hi + 1) * step, n: tr.length };
+  }
+  _cols(S, tf, now) {
+    if (tf <= 1000) return S.map(x => (x.w = 2000, x));
+    const key = S.length + ':' + tf + ':' + (S.length ? S[S.length - 1].t : 0); if (this._ck === key) return this._cc; const out = [], bins = new Map();
+    for (const s of S) { const b = Math.floor(s.t / tf); let o = bins.get(b); if (!o) { o = { t: Math.min(now, (b + 1) * tf), w: tf, mid: s.mid, B: new Map(), A: new Map() }; bins.set(b, o); out.push(o); } o.mid = s.mid; for (const [m, arr] of [[o.B, s.B], [o.A, s.A]]) for (const a of arr) { const v = m.get(a[0]); if (v === undefined || a[1] > v) m.set(a[0], a[1]); } }
+    for (const o of out) { o.B = [...o.B]; o.A = [...o.A]; } this._ck = key; this._cc = out; return out;
   }
   _div() {
     const lm = this.lm; if (!lm || !lm.snaps.length) return null; const now = Date.now(), t0 = now - 5 * 60e3;
@@ -149,27 +165,27 @@ export class Bookmap {
     const lm = this.lm; this._chips(); this._readings();
     const S = lm ? lm.snaps : []; const geo = this.geom(), { plotW, heatH, cvdH, axisH } = geo;
     if (!S.length) { g.fillStyle = '#a9bbd6'; g.font = '13px system-ui'; g.textAlign = 'center'; const msg = (lm && lm.err) ? ((isAr() ? 'خطأ: ' : 'Error: ') + lm.err) : this.L('empty'); wrapText(g, msg, cw / 2, ch / 2 - 10, cw - 40, 18); return; }
-    const last = S[S.length - 1], mid = last.mid, now = Date.now(), wMs = this.wm * 60e3, tS = now - wMs, lo = mid * (1 - this.rp), hi = mid * (1 + this.rp), bin = lm.bin;
+    const last = S[S.length - 1], mid = last.mid, now = Date.now(), tf = this.tf, wMs = plotW * tf / this.colW, maxPan = Math.max(0, (now - S[0].t) / tf * this.colW - plotW * 0.4); this.panX = Math.min(this.panX, maxPan); const tS = now - wMs - this.panX * tf / this.colW, cMid = mid + this.offP, lo = cMid * (1 - this.rp), hi = cMid * (1 + this.rp), bin = lm.bin;
     this.v = { tS, wMs, lo, hi, plotW, heatH, bin, S };
     const X = t => (t - tS) / wMs * plotW, Y = p => (hi - p) / (hi - lo) * heatH;
     // scale from visible sizes
-    const vis = []; for (let i = S.length - 1; i >= 0 && S[i].t >= tS - 2000; i--) { const s = S[i]; for (const a of s.B) { const p = (a[0] + .5) * bin; if (p >= lo && p <= hi) vis.push(a[1]); } for (const a of s.A) { const p = (a[0] + .5) * bin; if (p >= lo && p <= hi) vis.push(a[1]); } }
+    const COLS = this._cols(S, tf, now); const vis = []; for (let i = COLS.length - 1; i >= 0 && COLS[i].t >= tS - 2000; i--) { const s = COLS[i]; for (const a of s.B) { const p = (a[0] + .5) * bin; if (p >= lo && p <= hi) vis.push(a[1]); } for (const a of s.A) { const p = (a[0] + .5) * bin; if (p >= lo && p <= hi) vis.push(a[1]); } }
     vis.sort((a, b) => a - b); const ref = vis.length ? Math.max(vis[Math.floor(vis.length * 0.995)], 1e-9) : 1; this.ref = ref; const lref = Math.log1p(ref / (vis[Math.floor(vis.length * 0.5)] || ref) * 1);
     const med = vis[Math.floor(vis.length * 0.5)] || ref * 0.01, den = Math.log1p(ref / med);
-    const cw2 = Math.max(1, 2000 / wMs * plotW + 0.6), rh = Math.max(1, bin / (hi - lo) * heatH + 0.6);
+    const cw2Of = c => Math.max(1, c.w / wMs * plotW + 0.6), rh = Math.max(1, bin / (hi - lo) * heatH + 0.6);
     g.save(); g.beginPath(); g.rect(0, 0, plotW, heatH); g.clip();
-    for (const s of S) { if (s.t < tS - 2000) continue; const x = X(s.t) - cw2; for (let side = 0; side < 2; side++) { const arr = side ? s.A : s.B; const rgb = side ? '255,90,68' : '38,230,160'; for (const a of arr) { const p = (a[0] + .5) * bin; if (p < lo || p > hi) continue; const v = Math.log1p(a[1] / med) / den; if (v < 0.12) continue; const al = Math.min(1, 0.1 + 0.9 * Math.pow(Math.min(1, v), 1.3)); g.fillStyle = `rgba(${rgb},${al.toFixed(2)})`; g.fillRect(x, Y(p + bin / 2), cw2, rh); } } }
+    for (const s of COLS) { if (s.t < tS - 2000 || s.t - s.w > tS + wMs + 2000) continue; const cw2 = cw2Of(s), x = X(s.t) - cw2; for (let side = 0; side < 2; side++) { const arr = side ? s.A : s.B; const rgb = side ? '255,90,68' : '38,230,160'; for (const a of arr) { const p = (a[0] + .5) * bin; if (p < lo || p > hi) continue; const v = Math.log1p(a[1] / med) / den; if (v < 0.12) continue; const al = Math.min(1, 0.1 + 0.9 * Math.pow(Math.min(1, v), 1.3)); g.fillStyle = `rgba(${rgb},${al.toFixed(2)})`; g.fillRect(x, Y(p + bin / 2), cw2, rh); } } }
     // mid price line
     g.strokeStyle = '#e8f1ff'; g.lineWidth = 1.2; g.beginPath(); let st = false; for (const s of S) { if (s.t < tS - 2000) continue; const x = X(s.t), y = Y(s.mid); if (!st) { g.moveTo(x, y); st = true; } else g.lineTo(x, y); } g.stroke();
     // bubbles
     const tr = this.trades.filter(x => x.t >= tS && x.p >= lo && x.p <= hi); let thr = 0, qmax = 0;
     if (tr.length) { const qs = tr.map(x => x.q).sort((a, b) => a - b); thr = tr.length >= 20 ? qs[Math.floor(qs.length * 0.9)] : 0; qmax = qs[qs.length - 1]; }
-    for (const x of tr) { if (x.q < thr) continue; const px = X(x.t), py = Y(x.p), r = 3 + 11 * Math.sqrt(x.q / (qmax || 1)); const c = x.buy ? '38,230,160' : '255,90,68'; g.fillStyle = `rgba(${c},.28)`; g.strokeStyle = `rgba(${c},.95)`; g.lineWidth = 1.2; g.beginPath(); g.arc(px, py, r, 0, 7); g.fill(); g.stroke(); this.hits.push({ x: px, y: py, r, tr: x }); }
-    this._lv = this._levels(); if (this._lv) { const labs = [], L = this._lv, line = (p, c, dash, w, tag) => { if (p < lo || p > hi) return; const y = Y(p); g.strokeStyle = c; g.lineWidth = w; g.setLineDash(dash); g.beginPath(); g.moveTo(0, y); g.lineTo(plotW, y); g.stroke(); g.setLineDash([]); labs.push({ y, c, tag }); }; line(L.vah, '#b58cff99', [2, 3], 1, 'VAH'); line(L.val, '#b58cff99', [2, 3], 1, 'VAL'); line(L.poc, '#f2c14ecc', [], 1.2, 'POC'); line(L.vwap, '#ff9ff3dd', [6, 3], 1.3, 'VWAP'); labs.sort((a, b) => a.y - b.y); for (let i = 1; i < labs.length; i++) if (labs[i].ly === undefined) { labs[i].ly = Math.max(labs[i].y, (labs[i - 1].ly ?? labs[i - 1].y) + 10); } g.font = 'bold 9px system-ui'; g.textAlign = 'left'; for (const l of labs) { g.fillStyle = l.c; g.fillText(l.tag, 3, (l.ly ?? l.y) - 2); } }
+    if (this.show.tr) for (const x of tr) { if (x.q < thr) continue; const px = X(x.t), py = Y(x.p), r = 3 + 11 * Math.sqrt(x.q / (qmax || 1)); const c = x.buy ? '38,230,160' : '255,90,68'; g.fillStyle = `rgba(${c},.28)`; g.strokeStyle = `rgba(${c},.95)`; g.lineWidth = 1.2; g.beginPath(); g.arc(px, py, r, 0, 7); g.fill(); g.stroke(); this.hits.push({ x: px, y: py, r, tr: x }); }
+    this._lv = this._levels(); if (this._lv && this.show.lv) { const labs = [], L = this._lv, line = (p, c, dash, w, tag) => { if (p < lo || p > hi) return; const y = Y(p); g.strokeStyle = c; g.lineWidth = w; g.setLineDash(dash); g.beginPath(); g.moveTo(0, y); g.lineTo(plotW, y); g.stroke(); g.setLineDash([]); labs.push({ y, c, tag }); }; line(L.vah, '#b58cff99', [2, 3], 1, 'VAH'); line(L.val, '#b58cff99', [2, 3], 1, 'VAL'); line(L.poc, '#f2c14ecc', [], 1.2, 'POC'); line(L.vwap, '#ff9ff3dd', [6, 3], 1.3, 'VWAP'); labs.sort((a, b) => a.y - b.y); for (let i = 1; i < labs.length; i++) if (labs[i].ly === undefined) { labs[i].ly = Math.max(labs[i].y, (labs[i - 1].ly ?? labs[i - 1].y) + 10); } g.font = 'bold 9px system-ui'; g.textAlign = 'left'; for (const l of labs) { g.fillStyle = l.c; g.fillText(l.tag, 3, (l.ly ?? l.y) - 2); } }
     // events (inference markers)
     this._evs = this._events(); const EC = { P: '#f2c14e', C: '#8fa3c0', A: '#7ee0ff', X: '#ff8fd0', H: '#7ee0ff' };
     g.font = 'bold 9px system-ui'; g.textAlign = 'center';
-    for (const e of this._evs) { if (e.t < tS || e.p < lo || e.p > hi) continue; const px = X(e.t), py = Y(e.p); g.fillStyle = '#080b12cc'; g.strokeStyle = EC[e.cls]; g.lineWidth = 1.3; g.beginPath(); g.roundRect ? g.roundRect(px - 7, py - 7, 14, 14, 3) : g.rect(px - 7, py - 7, 14, 14); g.fill(); g.stroke(); g.fillStyle = EC[e.cls]; g.fillText(e.cls === 'H' ? 'A?' : e.cls, px, py + 3); this.hits.push({ x: px, y: py, r: 9, ev: e }); }
+    if (this.show.ev) for (const e of this._evs) { if (e.t < tS || e.p < lo || e.p > hi) continue; const px = X(e.t), py = Y(e.p); g.fillStyle = '#080b12cc'; g.strokeStyle = EC[e.cls]; g.lineWidth = 1.3; g.beginPath(); g.roundRect ? g.roundRect(px - 7, py - 7, 14, 14, 3) : g.rect(px - 7, py - 7, 14, 14); g.fill(); g.stroke(); g.fillStyle = EC[e.cls]; g.fillText(e.cls === 'H' ? 'A?' : e.cls, px, py + 3); this.hits.push({ x: px, y: py, r: 9, ev: e }); }
     g.restore();
     // price axis
     g.fillStyle = '#a9bbd6'; g.font = '10px ui-monospace,Menlo,monospace'; g.textAlign = 'left'; const d = decs(mid);
