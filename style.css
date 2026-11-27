@@ -59,3 +59,5 @@ select,.btn,input{background:var(--bg);color:var(--text);border:1px solid var(--
 .leg{padding:4px 0;border-bottom:1px solid var(--line);font:11px system-ui}.v.ok{color:var(--up)}.v.warn{color:var(--gold)}
 
 .jr{padding:6px 0;border-bottom:1px solid var(--line)}.jr input{width:100%;margin-top:3px}label input[type=number]{width:100%}.row label{flex:1;min-width:90px;display:flex;flex-direction:column;font-size:11px;color:var(--mut)}
+
+.rtl #side,.rtl #sheet .card{font-family:system-ui,'Segoe UI',Tahoma,sans-serif}.rtl .kv span:last-child{text-align:left;margin-left:0;margin-right:10px}.rtl .note,.rtl .why{line-height:1.7}.rtl #tabs{direction:rtl}
