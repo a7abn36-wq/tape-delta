@@ -5,6 +5,7 @@ import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
 import { analyze } from './analyst.js';
+import { magnets } from './magnet.js';
 import { backtest, stats as btStats, DEFAULTS as BT0 } from './backtest.js';
 import { detectFlow, stackedImb } from './flow.js';
 import { loadProfileCandles, computeProfile } from './vp.js';
@@ -17,7 +18,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, vp: false, flowsig: true },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, vp: false, flowsig: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -372,6 +373,17 @@ class App {
     else if (M && !M.err) h += `<div class="grp">Power of 3 (AMD)</div><div class="note">N/A: ${T('no complete Asia session in the loaded candles.', 'مفيش جلسة آسيا كاملة في الشموع المحملة.')}</div>`;
     el.innerHTML = h; $('#mtfRun').onclick = () => this.runMTF(); if (!M && !this.mtfBusy) this.runMTF();
   }
+  getMagnets() { if (!this.ict || !this.candles.length) return null; const k = this.candles.length + ':' + this.candles[this.candles.length - 1].t + ':' + Math.round(this.price || 0); if (this._mgK === k) return this._mg; const w = this.liq && this.state.ind.liq ? this.liq.stats().walls : []; this._mg = magnets(this.candles, this.ict, this.levels, w, this.tfMs()); this._mgK = k; return this._mg; }
+  magnetLines() { if (!this.state.ind.magnet) return []; const m = this.getMagnets(); if (!m) return []; return [m.nearUp && { p: m.nearUp.p, name: 'MAG ' + m.nearUp.score }, m.nearDown && { p: m.nearDown.p, name: 'MAG ' + m.nearDown.score }].filter(Boolean); }
+  renderMag() {
+    const el = $('#pane-mag'); if (!el || el.hidden) return; el.setAttribute('data-noi18n', ''); const ar = isAr(), T = (e, x) => ar ? x : e, m = this.getMagnets(), d = this.price ? decimals(this.price) : 2;
+    let h = `<div class="grp">${T('Liquidity magnets', 'مغناطيس السيولة')} · ${T('DERIVED', 'مشتق')}</div><div class="note">${T('Ranks resting-liquidity pools (unswept swing highs/lows, equal highs/lows, previous day/week high/low) by how many levels stack there, how long untouched, distance in ATR, and a nearby order-book wall. A rules-based ranking of where stops likely sit, not a prediction that price goes there. Not backtested.', 'بيرتب مناطق السيولة (قمم/قيعان سوينج ما اتكسرتش، قمم/قيعان متساوية، أعلى/أقل اليوم والأسبوع اللي فات) حسب كام مستوى متجمع هناك، بقالها قد إيه ما اتلمستش، المسافة بالـ ATR، وجود جدار في الأوردر بوك. ترتيب بالقواعد لمكان الستوبات غالبا، مش توقع إن السعر هيروح هناك. مش مختبر.')}</div>`;
+    if (!m || !m.pools.length) { el.innerHTML = h + `<div class="note">N/A: ${T('not enough candles or no unswept pools in the loaded range.', 'مفيش شموع كفاية أو مفيش مناطق سيولة في المدى المحمل.')}</div>`; return; }
+    const row = (o, lab) => `<div class="kv"><span><b>${lab}</b> ${o.side === 'up' ? T('above', 'فوق') : T('below', 'تحت')} · ${o.types.join(' + ')}</span><span>${fmt(o.p, d)} · <b>${o.score}</b>/100 · ${o.distAtr.toFixed(1)} ATR</span></div>`;
+    h += `<div class="grp">${T('Nearest target above / below', 'أقرب هدف فوق / تحت')}</div>${m.nearUp ? row(m.nearUp, 'BSL') : '<div class="kv"><span>BSL</span><span>N/A</span></div>'}${m.nearDown ? row(m.nearDown, 'SSL') : '<div class="kv"><span>SSL</span><span>N/A</span></div>'}<div class="grp">${T('Ranked pools', 'المناطق مرتبة')}</div>`;
+    h += m.pools.slice(0, 8).map(o => `<div class="alrow"><span>${row(o, o.side === 'up' ? 'BSL' : 'SSL')}<div class="note">${o.factors.map(f => f.txt + ' +' + f.v).join(' · ')}${o.wall ? '' : ''}</div></span></div>`).join('');
+    h += `<div class="note">${T('Order-book walls are PARTIAL: only walls seen since you opened the app, on one venue.', 'جدران الأوردر بوك PARTIAL: بس اللي اتشافت من وقت ما فتحت التطبيق، على بورصة واحدة.')}</div>`; el.innerHTML = h;
+  }
   renderBT() {
     const el = $('#pane-bt'); if (!el || el.hidden) return; const ar = isAr(), B = this.bt ||= { len: 3000, rr: 2, kz: false }, R = this.btRes, esc2 = s => String(s).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch])); const T = (en, x) => ar ? x : en;
     el.setAttribute('data-noi18n', ''); const f2 = v => (v >= 0 ? '+' : '') + v.toFixed(2);
@@ -617,7 +629,7 @@ class App {
     $('#bSet').onclick = () => { const draw = () => { $('#sheetT').textContent = 'Settings'; $('#sheetB').innerHTML = settingsHTML(this.state); $('#sheetB').querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { setLang(b.dataset.lang); draw(); this.renderFeed(); this.renderAll && this.renderAll(); }); const cd = $('#setCd'); if (cd) cd.onchange = () => { this.state.countdown = cd.checked; this.save(); this.chart.invalidate(); }; }; draw(); $('#sheet').hidden = false; };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'bt') this.renderBT(); if (t === 'mtf') this.renderMTF(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'bt') this.renderBT(); if (t === 'mag') this.renderMag(); if (t === 'mtf') this.renderMTF(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
     this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('diag'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
@@ -639,6 +651,7 @@ class App {
       <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'flowsig', 'Order-flow signals: ABS absorption, EXH exhaustion, RUN stop run')}${chk('ind', 'vp', 'Volume profile: POC / VAH / VAL (approximate, from 1m candles)')}<div class="row"><select id="vpMode"><option value="session">Profile: current session</option><option value="day">Profile: day (UTC)</option><option value="week">Profile: week (from Monday UTC)</option></select></div>${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Gold lines (XAUUSDT / PAXGUSDT)</div>${chk('ind', 'goldAtr', 'Daily ATR lines (ATR +0.5 / +1 / -0.5 / -1)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}${chk('ind', 'goldTimes', 'Session / news time lines (COMEX settle, London open, LBMA fix)', this.isGold() ? (intraday ? '' : 'needs 1h or lower') : 'gold symbols only', !this.isGold() || !intraday)}
+      ${chk('ind', 'magnet', 'Liquidity magnet lines (nearest above / below, score)')}
       <div class="grp">Overlays</div>${chk('ind', 'ema9', 'EMA 9')}${chk('ind', 'ema21', 'EMA 21')}${chk('ind', 'ema50', 'EMA 50')}${chk('ind', 'ema200', 'EMA 200')}${chk('ind', 'vwap', 'VWAP (daily UTC reset)')}
       <div class="grp">ICT / SMC (master switch)</div>${chk('ind', 'ict', 'Show ICT / SMC layers', 'master')}
       <div class="note">Each layer below works on its own. The master switch hides all of them, and the boxes stay ticked.</div>
