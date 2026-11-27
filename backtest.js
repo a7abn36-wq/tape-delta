@@ -2,12 +2,17 @@
 // Fills assume limit entry at the OB edge, stop first if stop and target are hit in the same candle, fees applied. Past results do not predict the future.
 import { wilderATR, nyHour } from './ict.js';
 import { sessionOf } from './flow.js';
-export const DEFAULTS = { rr: 2, fee: 0.04, sweepToChoch: 15, wait: 20, maxHold: 60, kzOnly: false };
+export const DEFAULTS = { rr: 2, fee: 0.04, sweepToChoch: 15, wait: 20, maxHold: 60, kzOnly: false, mtf: false, dflip: false };
 export function backtest(c, o = {}) {
   o = { ...DEFAULTS, ...o }; const n = c.length, L = 3, atr = wilderATR(c), trades = []; if (n < 100) return { trades, n, o };
   const sw = []; for (let i = L; i < n - L; i++) { let H = true, Lo = true; for (let j = 1; j <= L; j++) { if (!(c[i].h > c[i - j].h && c[i].h >= c[i + j].h)) H = false; if (!(c[i].l < c[i - j].l && c[i].l <= c[i + j].l)) Lo = false; } if (H) sw.push({ i, type: 'H', p: c[i].h, conf: i + L }); if (Lo) sw.push({ i, type: 'L', p: c[i].l, conf: i + L }); }
   sw.sort((a, b) => a.conf - b.conf || a.i - b.i);
   let si = 0, lastH = null, lastL = null, trend = null; const openSw = { H: [], L: [] }; let sweep = { bull: null, bear: null }; let pend = []; let busyUntil = -1;
+  // higher-timeframe bias, point-in-time: factor 4 buckets, only COMPLETED buckets are used (close vs EMA20 of bucket closes)
+  const tfm = n > 1 ? c[1].t - c[0].t : 0, F = 4, bk = new Map(), ids = []; for (let i = 0; i < n; i++) { const id = Math.floor(c[i].t / (tfm * F)); if (!bk.has(id)) { bk.set(id, { id, close: c[i].c }); ids.push(id); } else bk.get(id).close = c[i].c; }
+  { let e = null; const kk = 2 / 21; ids.forEach((id, q) => { const x = bk.get(id); e = e == null ? x.close : x.close * kk + e * (1 - kk); x.bias = q < 5 ? null : x.close > e ? 'bull' : 'bear'; }); }
+  const htf = k => { const id = Math.floor(c[k].t / (tfm * F)); let lo = 0, hi = ids.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (ids[m] < id) { r = m; lo = m + 1; } else hi = m - 1; } return r >= 0 ? bk.get(ids[r]).bias : null; };
+  const dd0 = (k, dir) => k >= 2 && c[k - 1].d != null && c[k - 2].d != null && (dir === 'bull' ? c[k - 1].d > 0 && c[k - 2].d < 0 : c[k - 1].d < 0 && c[k - 2].d > 0);
   const kz = t => { const h = nyHour(t); return (h >= 2 && h < 5) || (h >= 7 && h < 10); };
   for (let k = 0; k < n; k++) {
     while (si < sw.length && sw[si].conf <= k) { const s = sw[si++]; if (s.type === 'H') { lastH = { ...s, broken: false }; openSw.H.push(s); } else { lastL = { ...s, broken: false }; openSw.L.push(s); } }
@@ -25,7 +30,7 @@ export function backtest(c, o = {}) {
     for (let q = pend.length - 1; q >= 0; q--) { const P = pend[q]; if (k <= P.k) continue; if (k - P.k > o.wait) { pend.splice(q, 1); continue; }
       const bull = P.dir === 'bull'; if ((bull && c[k].c < P.lo) || (!bull && c[k].c > P.hi)) { pend.splice(q, 1); continue; }
       const touched = bull ? c[k].l <= P.hi : c[k].h >= P.lo; if (!touched) continue; pend.splice(q, 1); if (k <= busyUntil) continue;
-      if (o.kzOnly && !kz(c[k].t)) continue;
+      if (o.kzOnly && !kz(c[k].t)) continue; if (o.mtf && htf(k) !== P.dir) continue; if (o.dflip && !dd0(k, P.dir)) continue;
       const entry = bull ? Math.min(P.hi, c[k].o) : Math.max(P.lo, c[k].o); const stop = bull ? Math.min(P.lo, P.sp) - 0.1 * atr[k] : Math.max(P.hi, P.sp) + 0.1 * atr[k]; const risk = Math.abs(entry - stop); if (!(risk > 0) || risk > 4 * atr[k]) continue;
       const tgt = bull ? entry + o.rr * risk : entry - o.rr * risk; let exit = null, res = null, j = k;
       // fill candle: if it also reaches stop, assume stop (conservative)
