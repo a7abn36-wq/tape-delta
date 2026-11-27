@@ -34,14 +34,15 @@ export function idxAtOrAfter(c, t) { let lo = 0, hi = c.length - 1, r = -1; whil
 export function detectFlow(c, ict, last = 60) {
   const n = c.length, out = []; if (n < 30) return out; const atr = wilderATR(c); const from = Math.max(21, n - last);
   const avgV = i => { let s = 0; for (let k = i - 20; k < i; k++) s += c[k].v; return s / 20; };
-  for (let i = from; i < n; i++) {
+  const tfG = c[n - 1].t - c[n - 2].t, nEnd = c[n - 1].t + tfG > Date.now() ? n - 1 : n; // the still-forming candle has provisional volume/delta: no signal is decided on it
+  for (let i = from; i < nEnd; i++) {
     const x = c[i], rng = x.h - x.l, av = avgV(i), a = atr[i]; if (!(a > 0) || !(av > 0)) continue; const dr = x.v ? x.d / x.v : 0, mid = (x.h + x.l) / 2;
     if (x.v >= 1.5 * av && rng <= 0.8 * a && Math.abs(dr) >= 0.25) { if (dr < 0 && x.c >= mid) out.push({ i, kind: 'ABS', dir: 'bull', note: 'selling absorbed' }); else if (dr > 0 && x.c <= mid) out.push({ i, kind: 'ABS', dir: 'bear', note: 'buying absorbed' }); }
     let hh = -Infinity, ll = Infinity; for (let k = i - 10; k < i; k++) { if (c[k].h > hh) hh = c[k].h; if (c[k].l < ll) ll = c[k].l; }
     if (x.h > hh) { let j = -1; for (let k = i - 10; k < i; k++) if (c[k].h === hh) j = k; if (j >= 0 && x.v < 0.8 * c[j].v && x.d < c[j].d && x.d < 0.1 * x.v) out.push({ i, kind: 'EXH', dir: 'bear', note: 'buying fading at new high' }); }
     if (x.l < ll) { let j = -1; for (let k = i - 10; k < i; k++) if (c[k].l === ll) j = k; if (j >= 0 && x.v < 0.8 * c[j].v && x.d > c[j].d && x.d > -0.1 * x.v) out.push({ i, kind: 'EXH', dir: 'bull', note: 'selling fading at new low' }); }
   }
-  if (ict) for (const s of ict.sweeps) { if (s.i < from || s.i >= n) continue; const av = avgV(s.i); if (c[s.i].v >= 1.3 * av) out.push({ i: s.i, kind: 'RUN', dir: s.type === 'L' ? 'bull' : 'bear', note: (s.type === 'L' ? 'sell-side' : 'buy-side') + ' stops run, volume spike' }); }
+  if (ict) for (const s of ict.sweeps) { if (s.i < from || s.i >= nEnd) continue; const av = avgV(s.i); if (c[s.i].v >= 1.3 * av) out.push({ i: s.i, kind: 'RUN', dir: s.type === 'L' ? 'bull' : 'bear', note: (s.type === 'L' ? 'sell-side' : 'buy-side') + ' stops run, volume spike' }); }
   return out;
 }
 // Stacked imbalances inside one footprint candle: 3+ adjacent price rows where one side traded 3x the other.
@@ -63,6 +64,25 @@ export function cvdDivergence(c, o = {}) {
     let H = true, Lo = true; for (let j = 1; j <= L; j++) { if (!(c[i].h > c[i - j].h && c[i].h >= c[i + j].h)) H = false; if (!(c[i].l < c[i - j].l && c[i].l <= c[i + j].l)) Lo = false; }
     if (H) { if (pH && i - pH.i >= minGap && i - pH.i <= maxGap && c[i].h > pH.p + 0.1 * atr[i] && cum[i] < pH.cvd - ab[i + L]) out.push({ type: 'bear', i1: pH.i, i2: i, conf: i + L, p1: pH.p, p2: c[i].h, c1: pH.cvd, c2: cum[i] }); pH = { i, p: c[i].h, cvd: cum[i] }; }
     if (Lo) { if (pL && i - pL.i >= minGap && i - pL.i <= maxGap && c[i].l < pL.p - 0.1 * atr[i] && cum[i] > pL.cvd + ab[i + L]) out.push({ type: 'bull', i1: pL.i, i2: i, conf: i + L, p1: pL.p, p2: c[i].l, c1: pL.cvd, c2: cum[i] }); pL = { i, p: c[i].l, cvd: cum[i] }; }
+  }
+  return out;
+}
+
+// Gate absorption (ABS) to liquidity zones: keep an ABS signal only if the candle's range overlaps a matching zone.
+// Selling absorbed (bull ABS) must sit in a support-type zone: bullish order block, bullish FVG, sell-side liquidity (SSL / equal lows), PDL / PWL / PML.
+// Buying absorbed (bear ABS) must sit in a resistance-type zone: bearish OB, bearish FVG, BSL / equal highs, PDH / PWH / PMH. Other signal kinds pass unchanged.
+// Zones come from the ICT layer (DERIVED); level lines (PDH etc.) are REAL prior-period extremes.
+export function gateAbs(sigs, c, ict, levels) {
+  if (!ict) return sigs; const atr = wilderATR(c), out = [];
+  for (const s of sigs) {
+    if (s.kind !== 'ABS') { out.push(s); continue; } const x = c[s.i], a = atr[s.i], bull = s.dir === 'bull'; let z = null;
+    const hit = (lo, hi, tol) => x.l <= hi + tol && x.h >= lo - tol;
+    for (const o of ict.ob) if (o.dir === s.dir && o.i < s.i && hit(o.lo, o.hi, 0.1 * a)) z = z || (bull ? 'bull OB' : 'bear OB');
+    for (const g of ict.fvg) if (g.dir === s.dir && g.i < s.i && hit(g.lo, g.hi, 0.1 * a)) z = z || 'FVG';
+    for (const q of ict.liq) if ((q.kind === 'SSL') === bull && hit(q.p, q.p, 0.3 * a)) z = z || q.kind;
+    for (const q of ict.eq) if ((q.kind === 'EQL') === bull && hit(q.p, q.p, 0.3 * a)) z = z || q.kind;
+    const lv = levels || {}; for (const [k, p] of bull ? [['PDL', lv.pdl], ['PWL', lv.pwl], ['PML', lv.pml]] : [['PDH', lv.pdh], ['PWH', lv.pwh], ['PMH', lv.pmh]]) if (p != null && hit(p, p, 0.3 * a)) z = z || k;
+    if (z) out.push({ ...s, zone: z, note: s.note + ' inside ' + z });
   }
   return out;
 }
