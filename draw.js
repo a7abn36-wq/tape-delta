@@ -9,6 +9,7 @@ DEFS.vline = { n: 1, ic: '│', name: ['Vertical line: tap a time', 'خط رأس
 DEFS.arrow = { n: 2, ic: '➚', name: ['Arrow: tap start, then the tip (or drag)', 'سهم: دوس البداية وبعدين الرأس (أو اسحب)'] };
 DEFS.channel = { n: 3, ic: '▱', name: ['Parallel channel: tap 2 points of the trend line, then a point on the other side', 'قناة موازية: دوس نقطتين للخط وبعدين نقطة للجهة التانية'] };
 DEFS.fork = { n: 3, ic: 'Ψ', name: ['Andrews pitchfork: tap pivot, then the next swing high and swing low', 'Pitchfork: دوس نقطة الارتكاز وبعدين القمة والقاع التاليين'] };
+DEFS.pos = { n: 3, ic: 'R:R', name: ['Long/short position: tap entry, then stop, then target', 'مركز شراء/بيع: دوس الدخول وبعدين الوقف وبعدين الهدف'] };
 export const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 export const FIBX = [0, 0.618, 1, 1.272, 1.618, 2, 2.618];
 const COL = ['#9aa7bd', '#ef5350', '#ff9800', '#e6b84a', '#26a69a', '#4c8dff', '#b58cff', '#ff9ff3'];
@@ -30,6 +31,7 @@ const ext = (a, b, L = 5000) => { const dx = b.x - a.x, dy = b.y - a.y, l = Math
 export function segs(ch, d) {
   const ps = d.pts.map(q => ch.P(q)), [a, b, c] = ps, W = ch.plotW, H = ch.lay ? ch.lay.mainH : ch.H;
   switch (d.type) {
+    case 'pos': { if (!b || !c) return []; const x0 = a.x, x1 = x0 + Math.max(70, Math.max(b.x, c.x) - x0); return [[{ x: x0, y: a.y }, { x: x1, y: a.y }], [{ x: x0, y: b.y }, { x: x1, y: b.y }], [{ x: x0, y: c.y }, { x: x1, y: c.y }]]; }
     case 'ray': return b ? [[a, ext(a, b)]] : [];
     case 'hray': return [[{ x: a.x, y: a.y }, { x: W, y: a.y }]];
     case 'vline': return [[{ x: a.x, y: 0 }, { x: a.x, y: H }]];
@@ -52,6 +54,20 @@ export function render(ch, g, th, d, sel) {
     g.restore();
     return;
   }
+  if (d.type === 'pos') {
+    const S0 = segs(ch, d); if (!S0.length) return; const [E, SL, TP] = S0, x0 = E[0].x, x1 = E[1].x, [A, B, C] = d.pts, lw = d.w || (sel ? 2.4 : 1.4);
+    const risk = Math.abs(A.p - B.p), rew = Math.abs(C.p - A.p), long = C.p > A.p && B.p < A.p, short = C.p < A.p && B.p > A.p, ok = long || short, rr = risk > 0 ? rew / risk : 0; const pc = v => (v >= 0 ? '+' : '') + (v / A.p * 100).toFixed(2) + '%';
+    g.save(); g.beginPath(); g.rect(0, 0, ch.plotW, ch.lay ? ch.lay.mainH : ch.H); g.clip(); g.setLineDash([]);
+    g.globalAlpha = .16; g.fillStyle = '#ef5350'; g.fillRect(x0, Math.min(E[0].y, SL[0].y), x1 - x0, Math.abs(SL[0].y - E[0].y)); g.fillStyle = '#26a69a'; g.fillRect(x0, Math.min(E[0].y, TP[0].y), x1 - x0, Math.abs(TP[0].y - E[0].y)); g.globalAlpha = 1;
+    const ln = (S, c) => { g.strokeStyle = c; g.lineWidth = lw; g.beginPath(); g.moveTo(S[0].x, S[0].y); g.lineTo(S[1].x, S[1].y); g.stroke(); };
+    ln(E, d.color || '#9aa7bd'); ln(SL, '#ef5350'); ln(TP, '#26a69a'); g.font = 'bold 10px system-ui'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    const lab = (t, x, y, c) => { g.fillStyle = c; g.fillText(t, x, y); };
+    lab(`${ok ? (long ? 'LONG' : 'SHORT') : 'check side'}  R:R ${rr.toFixed(2)}  ${fmtP(A.p, ch.dec)}`, x0 + 4, E[0].y - 4, d.color || '#9aa7bd');
+    lab(`Stop ${fmtP(B.p, ch.dec)} (${pc(B.p - A.p)})`, x0 + 4, SL[0].y + (B.p < A.p ? 11 : -4), '#ef5350');
+    lab(`Target ${fmtP(C.p, ch.dec)} (${pc(C.p - A.p)})`, x0 + 4, TP[0].y + (C.p < A.p ? 11 : -4), '#26a69a');
+    if (!ok) lab('stop and target must be on opposite sides of entry', x0 + 4, E[0].y + 22, '#e6b84a');
+    g.restore(); return;
+  }
   const S = segs(ch, d); if (!S.length) return; const lw = d.w || (sel ? 2.4 : 1.4); g.save(); g.beginPath(); g.rect(0, 0, ch.plotW, ch.lay ? ch.lay.mainH : ch.H); g.clip(); g.strokeStyle = g.fillStyle = col; g.lineWidth = lw; g.setLineDash([]);
   const line = (a, b) => { g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); };
   if (d.type === 'channel') { const [[a, b], [a2, b2]] = S; g.globalAlpha = .1; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.lineTo(b2.x, b2.y); g.lineTo(a2.x, a2.y); g.closePath(); g.fill(); g.globalAlpha = 1; line(a, b); line(a2, b2); g.setLineDash([4, 4]); g.globalAlpha = .7; line({ x: (a.x + a2.x) / 2, y: (a.y + a2.y) / 2 }, { x: (b.x + b2.x) / 2, y: (b.y + b2.y) / 2 }); g.globalAlpha = 1; }
@@ -66,6 +82,7 @@ export function dist(ch, d, x, y) {
   let best = Infinity; const seg = (a, b) => { const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy || 1; let t = ((x - a.x) * dx + (y - a.y) * dy) / l2; t = Math.max(0, Math.min(1, t)); best = Math.min(best, Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy))); };
   if (d.type === 'fib' || d.type === 'fibext') { if (d.pts.length < (d.type === 'fib' ? 2 : 3)) return best; const [x1, x2] = xr(ch, d); for (const o of levels(d)) { const yy = ch.ymap(o.p); seg({ x: x1, y: yy }, { x: x2, y: yy }); } const ps = d.pts.map(q => ch.P(q)); for (let i = 0; i < ps.length - 1; i++) seg(ps[i], ps[i + 1]); }
   else for (const [a, b] of segs(ch, d)) seg(a, b);
+  if (d.type === 'pos' && best > 0) { const S = segs(ch, d); if (S.length) { const ys = S.map(z => z[0].y), x0 = S[0][0].x, x1 = S[0][1].x; if (x >= x0 && x <= x1 && y >= Math.min(...ys) && y <= Math.max(...ys)) best = Math.min(best, 6); } }
   if (d.type === 'channel' && best > 0) { const S = segs(ch, d); if (S.length) { const [[a, b], [a2, b2]] = S; const inside = (px, py) => { let c = false; const P = [a, b, b2, a2]; for (let i = 0, j = 3; i < 4; j = i++) if ((P[i].y > py) !== (P[j].y > py) && px < (P[j].x - P[i].x) * (py - P[i].y) / (P[j].y - P[i].y) + P[i].x) c = !c; return c; }; if (inside(x, y)) best = Math.min(best, 6); } }
   return best;
 }
