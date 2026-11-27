@@ -6,10 +6,10 @@ const TH = {
   light: { bg: '#ffffff', panel: '#f4f6fa', grid: '#e6eaf1', text: '#5b6578', ax: '#1c2433', up: '#13967f', dn: '#d43b3b', cu: '#00a89a', cd: '#e0340f', cross: '#8a94a8', gold: '#b8860b', blue: '#1f6feb' },
 };
 const BG = new Image(); BG.src = 'icons/bg.jpg'; BG.onload = () => { try { window.app && window.app.chart.invalidate(); } catch (e) {} };
-const AXW = 68, AXH = 24, SUBH = 92;
+let AXW = 68; const AXH = 24, SUBH = 92;
 function nice(step) { const e = Math.pow(10, Math.floor(Math.log10(step))); const f = step / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; }
 function fmtP(p, dec) { return p.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }); }
-export function decimals(price) { return price >= 1000 ? 2 : price >= 100 ? 2 : price >= 1 ? 3 : 5; }
+export function decimals(price) { return price >= 1000 ? 2 : price >= 100 ? 2 : price >= 1 ? 3 : price >= 0.1 ? 4 : price >= 0.01 ? 5 : price >= 0.0001 ? 6 : 8; }
 function fmtV(v) { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : a >= 10 ? v.toFixed(1) : a >= 1 ? v.toFixed(2) : v.toFixed(3); }
 
 export class Chart {
@@ -53,7 +53,7 @@ export class Chart {
     { const vis = this.plotW / this.view.barW; if (isFinite(vis)) this.view.right = Math.min(Math.max(this.view.right, vis * 0.4), c.length + vis * 0.6); } // keep some candles on screen: never scroll into an empty range
     const lay = this.layout(); this.lay = lay; const [lo, hi, i0, i1] = this.range(); this.rg = [lo, hi, i0, i1];
     const mh = lay.mainH; this.ymap = p => mh - (p - lo) / (hi - lo) * mh; this.pmap = y => lo + (mh - y) / mh * (hi - lo);
-    const dec = decimals(c[c.length - 1].c); this.dec = dec; const bw = this.view.barW;
+    const dec = decimals(c[c.length - 1].c); this.dec = dec; AXW = dec >= 8 ? 96 : dec >= 6 ? 80 : 68; const bw = this.view.barW;
     // grid + price axis
     g.font = '11px ui-monospace,Menlo,monospace'; g.textBaseline = 'middle';
     const step = nice((hi - lo) / Math.max(3, mh / 55));

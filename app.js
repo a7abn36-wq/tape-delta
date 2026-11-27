@@ -1,4 +1,4 @@
-import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, fetchAggFrom, DIAG_TESTS, Feed } from './data.js';
+import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, fetchAggFrom, fetchUsdtPairs, DIAG_TESTS, Feed } from './data.js';
 import { computeICT, wilderATR, ema, nyHour } from './ict.js';
 import { sessionCVD, avwap, idxAtOrAfter, sessionOf } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
@@ -49,6 +49,14 @@ class App {
     try { let all = [], end; for (let p = 0; p < 5; p++) { const t = await fetchTrades(this.src, key, 1000, end); if (!t.length) break; all = t.concat(all); end = t[0].t - 1; } if (gen !== this.gen) return; const q = all.map(x => x.q).sort((x, y) => x - y); const thr = q.length >= 200 ? q[Math.floor(q.length * 0.99)] : Infinity; this.bub = { key, at: Date.now(), n: all.length, t0: all.length ? all[0].t : 0, thr, big: all.filter(x => x.q >= thr), max: q[q.length - 1] || 0 }; this.chart.invalidate(); } catch (e) { } finally { this._bubBusy = false; }
   }
   applyBg() { document.body.classList.toggle('bgimg', this.state.bgImg !== false && !document.documentElement.classList.contains('light')); }
+  async symSearch(sym) {
+    const ar = isAr(); $('#sheetT').textContent = ar ? 'بحث عن عملة' : 'Search crypto'; $('#sheetB').innerHTML = `<div class="note">${ar ? 'كل أزواج USDT على Binance Spot (قائمة حقيقية من البورصة). الأزواج دي ليها شموع وتريدز ودوم حقيقية زي الباقي.' : 'Every USDT pair on Binance Spot (real list from the exchange). They get real candles, trades and depth like the others.'}</div><div class="row"><input type="text" id="symQ" placeholder="${ar ? 'اكتب مثلا DOGE' : 'type e.g. DOGE'}" autocomplete="off" autocapitalize="characters"></div><div id="symL" class="note">${ar ? 'جاري التحميل...' : 'Loading list...'}</div>`; $('#sheet').hidden = false;
+    try { this._pairs ||= await fetchUsdtPairs(); } catch (e) { $('#symL').textContent = (ar ? 'فشل تحميل القائمة: ' : 'Could not load the list: ') + e.message; return; }
+    const draw = () => { const q = $('#symQ').value.trim().toUpperCase(), L = this._pairs.filter(p => !q || p.includes(q)).slice(0, 60); $('#symL').innerHTML = L.length ? L.map(p => `<button class="btn" data-p="${p}" style="margin:2px">${p.replace(/USDT$/, '')}</button>`).join('') + (this._pairs.length > 60 && !q ? `<div class="note">${this._pairs.length} ${ar ? 'زوج. اكتب للبحث.' : 'pairs. Type to filter.'}</div>` : '') : `<div class="note">${ar ? 'مفيش نتيجة.' : 'No match.'}</div>`;
+      $('#symL').querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const id = b.dataset.p; if (!SYMBOLS.some(s => s.id === id)) SYMBOLS.push({ id, name: id.replace(/USDT$/, ''), kinds: ['spot'], group: 'more' }); const ex = this.state.extraSyms ||= []; if (!ex.includes(id) && !SYMBOLS.find(s => s.id === id && !s.group)) { ex.push(id); if (ex.length > 30) ex.shift(); } this.exitReplay(); this.state.symbol = id; this.save(); this.selDraw = null; $('#sheet').hidden = true; sym.innerHTML = ''; this.rebuildSymSelect(sym); this.load(); this.renderAlerts(); }); };
+    $('#symQ').oninput = draw; draw(); $('#symQ').focus();
+  }
+  rebuildSymSelect(sym) { const opt = s => `<option value="${s.id}">${s.id} · ${s.name}</option>`; sym.innerHTML = SYMBOLS.filter(s => !s.group).map(opt).join('') + `<optgroup label="More crypto (Binance Spot, USDT)">` + SYMBOLS.filter(s => s.group === 'more').map(opt).join('') + `</optgroup><option value="__search">🔍 Search any USDT pair…</option>`; sym.value = this.state.symbol; }
   tfMs() { return TFS[this.state.tf]; }
   visibleCandles() { return this.replay ? (this.replay.vis || this.candles.slice(0, this.replay.idx + 1)) : this.candles; }
   toast(msg, ms = 6000) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; $('#toasts').appendChild(d); while ($('#toasts').children.length > 4) $('#toasts').firstChild.remove(); setTimeout(() => d.remove(), ms); }
@@ -667,8 +675,10 @@ class App {
   exitReplay() { const r = this.replay; if (!r) return; clearInterval(r.t); this.replay = null; this.renderTape(); this.renderDom(); $('#replaybar').hidden = true; $('#bRep').classList.remove('on'); this.chart.restore(r.saved); this.chart.cache = {}; this.recomputeICT(true); this.updateLegend(null); }
   // ---------- UI ----------
   buildUI() {
-    const sym = $('#sym'); sym.innerHTML = SYMBOLS.map(s => `<option value="${s.id}">${s.id} · ${s.name}</option>`).join(''); sym.value = this.state.symbol;
-    sym.onchange = () => { this.exitReplay(); this.state.symbol = sym.value; this.save(); this.selDraw = null; this.load(); this.renderAlerts(); };
+    for (const id of (this.state.extraSyms || [])) if (!SYMBOLS.some(s => s.id === id)) SYMBOLS.push({ id, name: id.replace(/USDT$/, ''), kinds: ['spot'], group: 'more' });
+    if (!SYMBOLS.some(s => s.id === this.state.symbol)) SYMBOLS.push({ id: this.state.symbol, name: this.state.symbol.replace(/USDT$/, ''), kinds: ['spot'], group: 'more' });
+    const sym = $('#sym'); const opt = s => `<option value="${s.id}">${s.id} · ${s.name}</option>`; sym.innerHTML = SYMBOLS.filter(s => !s.group).map(opt).join('') + `<optgroup label="More crypto (Binance Spot, USDT)">` + SYMBOLS.filter(s => s.group === 'more').map(opt).join('') + `</optgroup><option value="__search">🔍 Search any USDT pair…</option>`; sym.value = this.state.symbol;
+    sym.onchange = () => { if (sym.value === '__search') { sym.value = this.state.symbol; this.symSearch(sym); return; } this.exitReplay(); this.state.symbol = sym.value; this.save(); this.selDraw = null; this.load(); this.renderAlerts(); };
     const tfs = $('#tfs'); tfs.innerHTML = Object.keys(TFS).map(t => `<button data-tf="${t}">${t}</button>`).join('');
     tfs.onclick = e => { const t = e.target.dataset.tf; if (!t) return; this.exitReplay(); this.state.tf = t; this.save(); this.renderTf(); this.load(); this.renderIndCounts(); };
     this.renderTf();
