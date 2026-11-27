@@ -4,6 +4,7 @@ import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
+import { analyze } from './analyst.js';
 import { init as i18nInit, apply as i18nApply, setLang, helpHTML, settingsHTML, isAr } from './i18n.js';
 import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChange, corr } from './gold.js';
 import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
@@ -34,7 +35,7 @@ class App {
     this.liq = new LiqMap(() => { this.chart.invalidate(); this.renderLiq(); }); this.chart = new Chart($('#cv'), this);
     this.feed = new Feed({ status: s => this.setFeedStatus(s), kline: k => this.onKline(k), trade: t => this.onTrade(t) });
     this.buildUI(); this.applyTheme(); i18nInit(); this.load();
-    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => { this.renderFeed(); if (this.state.countdown !== false && this.candles.length) this.chart.invalidate(); }, 1000);
+    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => this.renderAI(), 4000); setInterval(() => { this.renderFeed(); if (this.state.countdown !== false && this.candles.length) this.chart.invalidate(); }, 1000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
@@ -132,7 +133,7 @@ class App {
     const syms = [...new Set(this.state.alerts.map(a => a.sym).concat(this.openTrades().map(t => t.sym)).filter(s => s !== sym))];
     for (const s of syms) { try { const sr = await resolveSource(s); const p = await fetchPrice(sr, s); this.checkAlerts(s, p); this.catchUp(s, sr); this.evalTrades(s, p, p, Date.now(), 'tick'); } catch {} }
   }
-  async pollDepth() { if (!this.src || $('#pane-dom').hidden && !(matchMedia('(min-width:821px)').matches && false)) return; try { const gen = this.gen; const { fetchDepth } = await import('./data.js'); const d = await fetchDepth(this.src, this.state.symbol); if (gen === this.gen) { this.depth = d; this.renderDom(); } } catch {} }
+  async pollDepth() { if (!this.src || $('#pane-dom').hidden && !(matchMedia('(min-width:821px)').matches && false)) return; try { const gen = this.gen; const { fetchDepth } = await import('./data.js'); const d = await fetchDepth(this.src, this.state.symbol); if (gen === this.gen) { this.depth = d; this.depthAt = Date.now(); this.renderDom(); } } catch {} }
   // ---------- live ----------
   onKline(k) {
     if (this.replay) return; this.lastUpdate = Date.now(); const c = this.candles; const last = c[c.length - 1]; if (!last) return;
@@ -313,6 +314,14 @@ class App {
     const el = $('#chip'); if (!el) return; const k = this.conf; if (!k) { el.innerHTML = '<span class="muted">ICT confluence: waiting for data or ICT layers off</span>'; return; }
     el.className = k.label === 'NO EDGE' ? 'flat' : k.dir === 'bull' ? 'long' : 'short';
     el.innerHTML = `<b>${k.label}</b> <i>${k.score}</i> <span>${esc(k.why)}</span>`;
+  }
+  renderAI() {
+    const el = $('#pane-ai'); if (!el || el.hidden) return; const ar = isAr(); const r = analyze(this, ar); const esc2 = s => String(s).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
+    if (this.depth && this.depthAt && Date.now() - this.depthAt > 20000) { const d = this.depth; this.depth = null; var keep = d; }
+    el.setAttribute('data-noi18n', '');
+    if (!r) { el.innerHTML = `<div class="note">${ar ? 'محتاج 40 شمعة على الأقل وطبقات ICT شغالة.' : 'Needs 40+ candles and ICT layers switched on.'}</div>`; if (keep) this.depth = keep; return; }
+    el.innerHTML = `<div class="grp">${esc2(r.head)}</div><div class="note">${esc2(r.tags[0])}</div>` + r.sections.map(([h, ls]) => `<div class="grp">${esc2(h)}</div>${ls.map(x => `<div class="why">${esc2(x)}</div>`).join('')}`).join('') + `<div class="note">${ar ? 'ده تحليل بقواعد ثابتة بيشتغل على موبايلك، من غير أي خدمة خارجية ومن غير تكلفة. مش توقع ومش نصيحة مالية، ومتجربش على بيانات قديمة، ومبيعرفش الأخبار. القرار والمخاطرة عليك.' : 'Rules-based analysis that runs on your phone, with no outside service and no cost. It is not a prediction or financial advice, it has not been backtested, and it does not know the news. The decision and the risk are yours.'}</div><div class="note">${ar ? 'الأرقام كلها من بيانات حقيقية في التطبيق. ' : 'Every number comes from the real data in the app. '}${this.src ? esc2(this.src.label) : ''}</div>`;
+    if (keep) this.depth = keep;
   }
   renderWhy() {
     const el = $('#pane-why'); if (!el) return; const k = this.conf; if (!k) { el.innerHTML = '<div class="note">Needs 40+ candles and ICT layers switched on.</div>'; return; }
@@ -521,7 +530,7 @@ class App {
     $('#bSet').onclick = () => { const draw = () => { $('#sheetT').textContent = 'Settings'; $('#sheetB').innerHTML = settingsHTML(this.state); $('#sheetB').querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { setLang(b.dataset.lang); draw(); this.renderFeed(); this.renderAll && this.renderAll(); }); const cd = $('#setCd'); if (cd) cd.onchange = () => { this.state.countdown = cd.checked; this.save(); this.chart.invalidate(); }; }; draw(); $('#sheet').hidden = false; };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
-    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
+    $('#tabs').onclick = e => { const t = e.target.dataset.t; if (!t) return; document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + t); if (t === 'dom') this.pollDepth(); if (t === 'alerts') this.renderAlerts(); if (t === 'stats') this.renderStats(); if (t === 'gold') this.renderGold(); if (t === 'ai') this.renderAI(); if (t === 'diag') { this.renderDiag(); if (!this.diagRows) this.runDiag(); } if (t === 'why') this.renderWhy(); if (t === 'data') this.renderData(); if (t === 'liq') this.renderLiq(); };
     this.openTab = t => $('#tabs button[data-t=' + t + ']').click(); $('#feed').onclick = () => { $('#side').classList.add('open'); this.openTab('diag'); }; $('#chip').onclick = () => { $('#side').classList.add('open'); this.openTab('why'); };
     $('#sheetX').onclick = () => $('#sheet').hidden = true; $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').hidden = true; };
     addEventListener('keydown', e => { if (e.key === 'Escape') { $('#sheet').hidden = true; if (this.state.tool !== 'cursor') this.setTool('cursor'); } });
