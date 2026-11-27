@@ -18,7 +18,7 @@
     <select id="sym" aria-label="Symbol"></select>
     <div id="tfs" role="group" aria-label="Timeframe"></div>
     <select id="ctype" aria-label="Chart type"><option value="candles">Candles</option><option value="footprint">Footprint</option></select>
-    <button id="bPlan" class="btn">Plan</button>
+    <button id="bBm" class="btn">Bookmap</button><button id="bPlan" class="btn">Plan</button>
     <button id="bInd" class="btn">Indicators</button>
     <button id="bRep" class="btn">Replay</button>
     <button id="bWs" class="btn">Workspace</button>
@@ -48,6 +48,7 @@
     </aside>
   </div>
 </div>
+<div id="bm" hidden><div class="bmtop"><b id="bmT">Bookmap</b><select id="bmSym"></select><span class="bmgrp"><button class="btn" data-wm="5">5m</button><button class="btn" data-wm="15">15m</button><button class="btn" data-wm="30">30m</button></span><span class="bmgrp"><button class="btn" data-rp="0.001">±0.1%</button><button class="btn" data-rp="0.0025">±0.25%</button><button class="btn" data-rp="0.005">±0.5%</button><button class="btn" data-rp="0.01">±1%</button></span><button class="btn" id="bmX">Back</button></div><div id="bmChips"></div><div id="bmWrap"><canvas id="bmCv"></canvas></div><div id="bmKey"></div><div id="bmLbl"></div><div id="bmRead"></div><div id="bmHint" class="bmnote"></div></div>
 <div id="sheet" hidden><div class="card"><div class="card-h"><b id="sheetT"></b><button class="btn" id="sheetX">Close</button></div><div id="sheetB"></div></div></div>
 <div id="toasts" aria-live="polite"></div>
 <script type="module" src="app.js"></script>

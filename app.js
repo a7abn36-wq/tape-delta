@@ -16,6 +16,7 @@ import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChang
 import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
 import { setFx, Chart, decimals } from './chart.js';
 import { explainHTML, match as learnMatch } from './learn.js';
+import { Bookmap } from './bookmap.js';
 
 const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
@@ -700,6 +701,7 @@ class App {
     $('#rpSpeed').onchange = () => { if (this.replay?.playing) { this.replayPause(); this.replayPlay(); } };
     const tzb = $('#bTz'); tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; tzb.onclick = () => { this.state.tz = this.state.tz === 'UTC' ? 'local' : 'UTC'; tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; this.save(); this.chart.invalidate(); };
     $('#bHelp').onclick = () => { const t = document.querySelector('#tabs button.on'); $('#sheetT').textContent = isAr() ? 'شرح' : 'Guide'; $('#sheetB').innerHTML = helpHTML(t && t.dataset.t); $('#sheet').hidden = false; };
+    $('#bBm').onclick = () => { if (!this.bm) this.bm = new Bookmap(this); this.bm.open(); };
     $('#bSet').onclick = () => { const draw = () => { $('#sheetT').textContent = 'Settings'; $('#sheetB').innerHTML = settingsHTML(this.state); $('#sheetB').querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { setLang(b.dataset.lang); draw(); this.renderFeed(); this.renderAll && this.renderAll(); }); const bm = $('#setBeg'); if (bm) bm.onchange = () => { this.state.beginner = bm.checked; this.save(); this.chart.selLbl = null; this.chart.invalidate(); }; const gl = $('#setGlow'); if (gl) gl.onchange = () => { this.state.candleGlow = gl.checked; this.save(); this.chart.invalidate(); }; const bg = $('#setBg'); if (bg) bg.onchange = () => { this.state.bgImg = bg.checked; this.save(); this.applyBg(); this.chart.invalidate(); }; const cd = $('#setCd'); if (cd) cd.onchange = () => { this.state.countdown = cd.checked; this.save(); this.chart.invalidate(); }; }; draw(); $('#sheet').hidden = false; };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };
     $('#bSide').onclick = () => $('#side').classList.toggle('open');
