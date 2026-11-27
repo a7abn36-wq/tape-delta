@@ -8,7 +8,7 @@ export const SYMBOLS = [
   { id: 'PAXGUSDT', name: 'Gold token (PAXG)', kinds: ['fut', 'spot'] },
   { id: 'XAUUSDT', name: 'Gold (XAU perp)', kinds: ['fut'] },
 ];
-export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5 };
+export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5, '1w': 6048e5 };
 export const SRC = {
   fut: { key: 'fut', label: 'Binance Futures', rest: 'https://fapi.binance.com/fapi/v1', ws: ['wss://fstream.binance.com/stream'] },
   spot: { key: 'spot', label: 'Binance Spot', rest: 'https://api.binance.com/api/v3', rests: ['https://api.binance.com/api/v3', 'https://data-api.binance.vision/api/v3'], ws: ['wss://stream.binance.com:443/stream', 'wss://stream.binance.com:9443/stream', 'wss://data-stream.binance.vision/stream'] },

@@ -114,6 +114,7 @@ export class Chart {
     g.restore();
     // axis tag for last price
     g.fillStyle = last.c >= last.o ? th.up : th.dn; g.fillRect(this.plotW, ly - 9, AXW, 18); g.fillStyle = '#fff'; g.font = 'bold 11px ui-monospace,Menlo,monospace'; g.textAlign = 'left'; g.fillText(fmtP(last.c, dec), this.plotW + 5, ly);
+    if (app.state.countdown !== false && !app.replay && c.length) { const lc = c[c.length - 1], sk = app.feed.skew || 0, left = Math.max(0, lc.t + app.tfMs() - (Date.now() - sk)); const s = Math.floor(left / 1000), dd = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), mm = Math.floor(s % 3600 / 60), ss = s % 60, p2 = n => String(n).padStart(2, '0'); const txt = dd ? dd + 'd ' + p2(hh) + ':' + p2(mm) : hh ? p2(hh) + ':' + p2(mm) + ':' + p2(ss) : p2(mm) + ':' + p2(ss); const warn = left < 10000; g.fillStyle = warn ? th.gold : th.panel2 || '#1e2430'; g.fillRect(this.plotW, ly + 9, AXW, 16); g.fillStyle = warn ? '#000' : th.text; g.font = '11px ui-monospace,Menlo,monospace'; g.textAlign = 'left'; g.fillText(txt, this.plotW + 5, ly + 17); }
     this.drawSubs(g, th, c, lay, i0, i1);
     this.drawCross(g, th, c, lay);
     app.onDraw && app.onDraw();

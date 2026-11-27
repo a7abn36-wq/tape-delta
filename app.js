@@ -33,7 +33,7 @@ class App {
     this.liq = new LiqMap(() => { this.chart.invalidate(); this.renderLiq(); }); this.chart = new Chart($('#cv'), this);
     this.feed = new Feed({ status: s => this.setFeedStatus(s), kline: k => this.onKline(k), trade: t => this.onTrade(t) });
     this.buildUI(); this.applyTheme(); this.load();
-    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => this.renderFeed(), 1000);
+    setInterval(() => this.poll(), 10000); setInterval(() => this.pollDepth(), 2500); setInterval(() => { this.renderStats(); this.renderData(); this.renderLiq(); }, 2000); setInterval(() => { this.pollGoldPx(); }, 30000); setInterval(() => this.restTick(), 2000); setInterval(() => { this.renderFeed(); if (this.state.countdown !== false && this.candles.length) this.chart.invalidate(); }, 1000);
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
@@ -142,7 +142,7 @@ class App {
     const I = this.integ; if (I.lastAggId != null && t.id <= I.lastAggId) return; this.lastUpdate = Date.now(); if (I.lastAggId != null && t.id > I.lastAggId + 1) { I.missed += t.id - I.lastAggId - 1; const ce = this.ticks.get(Math.floor(t.t / this.tfMs()) * this.tfMs()); if (ce && ce.status === 'full') { ce.status = 'stale'; I.reloads++; this.tickQ.push(Math.floor(t.t / this.tfMs()) * this.tfMs()); this.pumpTicks(); } }
     I.lastAggId = t.id;
     this.trades.push(t); if (this.trades.length > 20000) this.trades.splice(0, 5000);
-    const ct = Math.floor(t.t / this.tfMs()) * this.tfMs(); let e = this.ticks.get(ct); if (!e) { e = { arr: [], status: 'live', lastId: 0 }; this.ticks.set(ct, e); }
+    const tfm = this.tfMs(), W0 = tfm >= 6048e5 ? 3456e5 : 0, ct = Math.floor((t.t - W0) / tfm) * tfm + W0; let e = this.ticks.get(ct); if (!e) { e = { arr: [], status: 'live', lastId: 0 }; this.ticks.set(ct, e); }
     if (t.id > e.lastId) { e.arr.push([t.p, t.q, t.side === 'buy' ? 1 : 0, t.id, t.t]); e.lastId = t.id; }
     this.liq.addTrade(t);
     this.tape.unshift(t); if (this.tape.length > 40) this.tape.length = 40; this.setPrice(t.p);
