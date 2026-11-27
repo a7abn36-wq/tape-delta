@@ -309,6 +309,7 @@ export class Chart {
       }
       if (dist < bd) { bd = dist; best = d; }
     }
+    if (!best) { const st = this.app.state; for (const a of (st.avwaps[st.symbol] || [])) { const av = this.cache['av' + a.t]; if (!av) continue; const i = Math.round(this.iOf(x)); for (const arr of [av.v, av.up, av.dn]) { const v = arr && arr[i]; if (v != null && isFinite(v) && Math.abs(this.ymap(v) - y) < tol) { best = { id: a.id, type: 'avwap', pts: [] }; break; } } if (best) break; } }
     return best;
   }
   _bind() {
