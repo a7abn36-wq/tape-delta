@@ -57,3 +57,5 @@ select,.btn,input{background:var(--bg);color:var(--text);border:1px solid var(--
 .why{font:12px system-ui;margin:4px 0 8px;line-height:1.45}.kv em{font-style:normal;color:var(--gold);font-size:10px;margin-left:4px}.kv span:last-child{text-align:right;margin-left:10px}
 .tag{display:inline-block;font:700 9px system-ui;padding:1px 5px;border-radius:4px;background:var(--line);margin-right:4px;letter-spacing:.04em}.tag.REAL{background:rgba(38,166,154,.25)}.tag.PARTIAL,.tag.PROXY{background:rgba(230,184,74,.25)}.tag.NA{background:rgba(239,83,80,.2)}.tag.DERIVED{background:rgba(76,141,255,.25)}
 .leg{padding:4px 0;border-bottom:1px solid var(--line);font:11px system-ui}.v.ok{color:var(--up)}.v.warn{color:var(--gold)}
+
+.jr{padding:6px 0;border-bottom:1px solid var(--line)}.jr input{width:100%;margin-top:3px}label input[type=number]{width:100%}.row label{flex:1;min-width:90px;display:flex;flex-direction:column;font-size:11px;color:var(--mut)}

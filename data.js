@@ -48,6 +48,7 @@ export async function fetchKlines(src, sym, tf, limit = 700, endTime) {
   if (endTime) u += `&endTime=${endTime}`;
   return (await jget(u, 10000)).map(parseKline);
 }
+export async function fetchKlinesFrom(src, sym, tf, startTime, limit = 1000) { return (await jget(`${src.rest}/klines?symbol=${sym}&interval=${tf}&startTime=${startTime}&limit=${limit}`, 10000)).map(parseKline); }
 export async function fetchTrades(src, sym, limit = 1000, endTime) {
   let u = `${src.rest}/aggTrades?symbol=${sym}&limit=${limit}`;
   if (endTime) u += `&endTime=${endTime}`;

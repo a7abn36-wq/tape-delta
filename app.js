@@ -1,9 +1,10 @@
-import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, Feed } from './data.js';
+import { SYMBOLS, TFS, resolveSource, fetchKlines, fetchKlinesFrom, fetchTrades, fetchDepth, fetchTicker, fetchPrice, fetchFutExtras, fetchTickWindow, Feed } from './data.js';
 import { computeICT, wilderATR } from './ict.js';
 import { sessionCVD, avwap, idxAtOrAfter } from './flow.js';
 import { checkCandles, reconcile, TAGS } from './integrity.js';
 import { LiqMap } from './liq.js';
 import { confluence } from './confluence.js';
+import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
 import { Chart, decimals } from './chart.js';
 
 const $ = s => document.querySelector(s);
@@ -12,7 +13,7 @@ const DEF = {
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
   ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
-  alerts: [], drawings: {}, templates: {}, avwaps: {}, zoneAlerts: true,
+  alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
 const clone = o => JSON.parse(JSON.stringify(o));
 function loadState() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && typeof s === 'object') return merge(clone(DEF), s); } catch {} return clone(DEF); }
@@ -63,7 +64,7 @@ class App {
     this.loadMsg = ''; this.chart.invalidate(); this.updateLegend(null);
     this.feed.open(src, symbol, tf);
     if (this.state.ind.liq) this.liq.start(src, symbol);
-    this.loadLevels(gen); this.backfillTrades(gen); this.poll(); this.pollDepth();
+    this.loadLevels(gen); this.catchUp(symbol, src); this.backfillTrades(gen); this.poll(); this.pollDepth();
   }
   showError(symbol, e) {
     const alt = SYMBOLS.find(s => s.kinds.includes('spot'));
@@ -91,8 +92,8 @@ class App {
     try { const t = await fetchTicker(src, sym); if (gen === this.gen) { this.ticker = t; this.renderStats(); } } catch {}
     if (src.key === 'fut') { try { const e = await fetchFutExtras(sym); if (gen === this.gen) this.extras = e; } catch {} }
     // other-symbol alerts
-    const syms = [...new Set(this.state.alerts.map(a => a.sym).filter(s => s !== sym))];
-    for (const s of syms) { try { const sr = await resolveSource(s); const p = await fetchPrice(sr, s); this.checkAlerts(s, p); } catch {} }
+    const syms = [...new Set(this.state.alerts.map(a => a.sym).concat(this.openTrades().map(t => t.sym)).filter(s => s !== sym))];
+    for (const s of syms) { try { const sr = await resolveSource(s); const p = await fetchPrice(sr, s); this.checkAlerts(s, p); this.catchUp(s, sr); this.evalTrades(s, p, p, Date.now(), 'tick'); } catch {} }
   }
   async pollDepth() { if (!this.src || $('#pane-dom').hidden && !(matchMedia('(min-width:821px)').matches && false)) return; try { const gen = this.gen; const { fetchDepth } = await import('./data.js'); const d = await fetchDepth(this.src, this.state.symbol); if (gen === this.gen) { this.depth = d; this.renderDom(); } } catch {} }
   // ---------- live ----------
@@ -112,7 +113,72 @@ class App {
     if (!this._tapeT) this._tapeT = setTimeout(() => { this._tapeT = null; this.renderTape(); }, 400);
     this.chart.invalidate();
   }
-  setPrice(p) { this.prevPrice = this.price; this.price = p; this.checkAlerts(this.state.symbol, p); this.checkZones(p); }
+  setPrice(p) { this.prevPrice = this.price; this.price = p; this.checkAlerts(this.state.symbol, p); this.checkZones(p); this.evalTrades(this.state.symbol, p, p, Date.now(), 'tick'); }
+  // ---------- paper trade planner ----------
+  openTrades(sym) { return this.state.trades.filter(t => t.status !== 'closed' && (!sym || t.sym === sym)); }
+  evalTrades(sym, h, l, now, source) {
+    let changed = false; for (const t of this.state.trades) { if (t.sym !== sym || t.status === 'closed') continue; const ev = tradeStep(t, h, l, now, source); for (const e of ev) { changed = true; this.tradeEvent(t, e); } }
+    if (changed) { this.save(); this.chart.invalidate(); if (this._sheet === 'plan' && !$('#sheet').hidden) this.openPlanner(true); }
+  }
+  tradeEvent(t, e) {
+    const d = decimals(t.entry), nm = `${t.sym} ${t.dir}`;
+    const msg = e === 'filled' ? `📈 Paper trade filled: ${nm} at ${fmt(t.entry, d)}` : `${t.result === 'TP' ? '✅' : '🛑'} Paper trade closed: ${nm} ${t.result} ${t.R >= 0 ? '+' : ''}${t.R.toFixed(2)}R${t.ambiguous ? ' (stop and target in the same candle, counted as stop)' : ''}`;
+    this.toast(msg, 12000); this.beep(); try { navigator.vibrate?.([150, 80, 150]); } catch {}
+  }
+  async catchUp(sym, src) {
+    const list = this.state.trades.filter(t => t.sym === sym && t.status !== 'closed'); if (!list.length || !src) return;
+    const from = Math.min(...list.map(t => t.lastCheck || Math.ceil(t.created / 60e3) * 60e3)); const now = Date.now();
+    try {
+      const k = await fetchKlinesFrom(src, sym, '1m', from, 1000); let last = from;
+      for (const b of k) { if (b.t + 60e3 > now) break; for (const t of list) { if (t.status === 'closed' || b.t < (t.lastCheck || Math.ceil(t.created / 60e3) * 60e3)) continue; const ev = tradeStep(t, b.h, b.l, b.t, 'candle'); for (const e of ev) this.tradeEvent(t, e); } last = b.t + 60e3; }
+      for (const t of list) if (t.status !== 'closed') t.lastCheck = Math.max(t.lastCheck || 0, last);
+      this.save(); this.chart.invalidate();
+    } catch {}
+  }
+  planDefaults() {
+    const k = this.conf; const p = this.price; if (!p) return {}; const long = k && k.label !== 'NO EDGE' ? k.dir === 'bull' : true;
+    return { dir: long ? 'long' : 'short', entry: p, sl: k && k.inv != null && k.label !== 'NO EDGE' ? k.inv : null, tp: k && k.tgt != null && k.label !== 'NO EDGE' ? k.tgt : null, fromSetup: !!(k && k.label !== 'NO EDGE') };
+  }
+  addTrade(dir, entry, sl, tp, risk) {
+    const err = validate(dir, entry, sl, tp); if (err) return { err }; if (!(risk > 0)) return { err: 'Risk in dollars must be above 0.' };
+    const k = this.conf; const why = k ? `${k.label} ${k.score}/100 at creation: ${k.why}` : 'No setup computed at creation';
+    const t = { id: uid(), sym: this.state.symbol, dir, entry, sl, tp, risk, status: 'pending', created: Date.now(), lastCheck: Math.ceil(Date.now() / 60e3) * 60e3, why, note: '' };
+    this.state.trades.push(t); this.state.planRisk = risk; this.save();
+    if (this.price != null) this.evalTrades(t.sym, this.price, this.price, Date.now(), 'tick');
+    this.chart.invalidate(); return { t };
+  }
+  tradeLive(t) { return t.status === 'open' && t.sym === this.state.symbol && this.price != null ? toR(t, this.price) : null; }
+  openPlanner(keep) {
+    this._sheet = 'plan'; const s = this.state; const sy = s.symbol; const df = this.planDefaults(); const p = this.price; const d = p ? decimals(p) : 2; const inp = (id, v) => `<input type="number" step="any" inputmode="decimal" id="${id}" value="${v != null && isFinite(v) ? (+v).toFixed(d) : ''}">`;
+    const old = keep && $('#plDir') ? { dir: $('#plDir').value, e: $('#plE').value, s: $('#plS').value, t: $('#plT').value, r: $('#plR').value } : null;
+    const act = s.trades.filter(t => t.status !== 'closed'); const done = s.trades.filter(t => t.status === 'closed').sort((a, b) => b.closedAt - a.closedAt); const st = tradeStats(s.trades);
+    const money = t => t.R != null ? ` ${t.R * t.risk >= 0 ? '+' : '-'}$${Math.abs(t.R * t.risk).toFixed(0)}` : '';
+    $('#sheetT').textContent = 'Trade planner (paper)'; $('#sheetB').innerHTML = `
+      <div class="note">Paper trades only: nothing is sent to any exchange. Fills, stops and targets are checked against real prices (live ticks, and 1-minute candles while the app was closed).</div>
+      <div class="grp">New plan · ${sy}</div>
+      <div class="row"><select id="plDir"><option value="long">Long</option><option value="short">Short</option></select><span>Risk $</span><input type="number" id="plR" inputmode="decimal" value="${s.planRisk}" style="max-width:90px"></div>
+      <div class="row"><label>Entry ${inp('plE', null)}</label><label>Stop ${inp('plS', null)}</label><label>Target ${inp('plT', null)}</label></div>
+      <div class="row"><button class="btn" id="plSetup">Fill from ICT setup</button><button class="btn" id="plPx">Entry = price</button><button class="btn on" id="plGo">Place paper trade</button></div>
+      <div id="plCalc" class="note"></div><div id="plMsg"></div>
+      <div class="grp">Active (${act.length})</div>${act.map(t => { const r = this.tradeLive(t); const dd = decimals(t.entry); return `<div class="alrow"><span><b class="${t.dir === 'long' ? 'u' : 'd'}">${t.dir.toUpperCase()}</b> ${t.sym} ${t.status === 'pending' ? 'waiting' : 'open'} · ${fmt(t.entry, dd)} / SL ${fmt(t.sl, dd)} / TP ${fmt(t.tp, dd)}${r != null ? ` · <b class="${r >= 0 ? 'u' : 'd'}">${r >= 0 ? '+' : ''}${r.toFixed(2)}R</b>` : ''}</span><span>${t.status === 'open' && t.sym === sy ? `<button class="btn" data-close="${t.id}">Close</button> ` : ''}<button class="btn" data-del="${t.id}">${t.status === 'pending' ? 'Cancel' : '✕'}</button></span></div>`; }).join('') || '<div class="note">No active plans.</div>'}
+      <div class="grp">Journal (fills itself)</div>
+      ${st.n ? `<div class="kv"><span>Trades · win rate</span><span>${st.n} · ${st.winRate.toFixed(0)}%</span></div><div class="kv"><span>Total · average R</span><span class="${st.totalR >= 0 ? 'u' : 'd'}">${st.totalR >= 0 ? '+' : ''}${st.totalR.toFixed(2)}R · ${st.avgR.toFixed(2)}R</span></div><div class="kv"><span>Avg MAE · avg MFE</span><span>${st.maeR.toFixed(2)}R · ${st.mfeR.toFixed(2)}R</span></div>` : '<div class="note">No closed trades yet.</div>'}
+      ${done.slice(0, 25).map(t => { const dd = decimals(t.entry), dr = riskDist(t); return `<div class="jr"><div><b class="${t.R >= 0 ? 'u' : 'd'}">${t.R >= 0 ? '+' : ''}${t.R.toFixed(2)}R${money(t)}</b> ${t.result}${t.ambiguous ? ' (same-candle, counted as stop)' : ''} · ${t.dir} ${t.sym} <button class="btn" data-del="${t.id}">✕</button></div><div class="note">${fmt(t.entry, dd)} → ${fmt(t.exit, dd)} · SL ${fmt(t.sl, dd)} TP ${fmt(t.tp, dd)} · MAE ${((t.mae || 0) / dr).toFixed(2)}R · MFE ${((t.mfe || 0) / dr).toFixed(2)}R · held ${t.openedAt ? Math.max(1, Math.round((t.closedAt - t.openedAt) / 60000)) + ' min' : 'n/a'}</div><div class="note">${esc(t.why || '')}</div><input type="text" maxlength="120" data-note="${t.id}" placeholder="Note" value="${esc(t.note || '')}"></div>`; }).join('')}
+      <div class="row"><button class="btn" id="plCsv">Export journal (.csv)</button></div>`;
+    $('#sheet').hidden = false;
+    const setv = (o) => { $('#plDir').value = o.dir || 'long'; $('#plE').value = o.entry != null ? (+o.entry).toFixed(d) : ''; $('#plS').value = o.sl != null ? (+o.sl).toFixed(d) : ''; $('#plT').value = o.tp != null ? (+o.tp).toFixed(d) : ''; };
+    if (old) { $('#plDir').value = old.dir; $('#plE').value = old.e; $('#plS').value = old.s; $('#plT').value = old.t; $('#plR').value = old.r; } else setv({ dir: df.dir, entry: df.entry, sl: df.sl, tp: df.tp });
+    const read = () => ({ dir: $('#plDir').value, e: parseFloat($('#plE').value), s: parseFloat($('#plS').value), t: parseFloat($('#plT').value), r: parseFloat($('#plR').value) });
+    const calc = () => { const v = read(); const err = isFinite(v.e) && isFinite(v.s) && isFinite(v.t) ? validate(v.dir, v.e, v.s, v.t) : null; const dist = Math.abs(v.e - v.s); const rr = Math.abs(v.t - v.e) / dist; const units = v.r / dist; $('#plCalc').textContent = isFinite(rr) && !err ? `Risk distance ${fmt(dist, d)} · reward:risk ${rr.toFixed(2)} · size ${units.toFixed(units < 1 ? 4 : 2)} units · ${p ? (v.e === p ? 'fills now' : 'fills when price touches the entry') : ''}` : (err || ''); };
+    ['plDir', 'plE', 'plS', 'plT', 'plR'].forEach(id => $('#' + id).oninput = calc); $('#plDir').onchange = calc; calc();
+    $('#plSetup').onclick = () => { const x = this.planDefaults(); if (!x.fromSetup) { $('#plMsg').innerHTML = '<div class="msg warn">No clean ICT setup right now (NO EDGE or no invalidation/target). Fill the levels yourself.</div>'; return; } setv(x); calc(); };
+    $('#plPx').onclick = () => { if (p) { $('#plE').value = p.toFixed(d); calc(); } };
+    $('#plGo').onclick = () => { const v = read(); const r = this.addTrade(v.dir, v.e, v.s, v.t, v.r); if (r.err) { $('#plMsg').innerHTML = `<div class="msg err">${esc(r.err)}</div>`; return; } this.toast('Paper trade placed: ' + (r.t.status === 'open' ? 'filled at ' + fmt(r.t.entry, d) : 'waiting for ' + fmt(r.t.entry, d))); this.openPlanner(); };
+    $('#sheetB').querySelectorAll('[data-close]').forEach(b => b.onclick = () => { const t = s.trades.find(x => x.id === b.dataset.close); if (t && this.price != null) { closeManual(t, this.price, Date.now()); this.save(); this.chart.invalidate(); this.openPlanner(); } });
+    $('#sheetB').querySelectorAll('[data-del]').forEach(b => b.onclick = () => { s.trades = s.trades.filter(x => x.id !== b.dataset.del); this.save(); this.chart.invalidate(); this.openPlanner(); });
+    $('#sheetB').querySelectorAll('[data-note]').forEach(i => i.onchange = () => { const t = s.trades.find(x => x.id === i.dataset.note); if (t) { t.note = i.value; this.save(); } });
+    $('#plCsv').onclick = () => { if (!s.trades.length) { $('#plMsg').innerHTML = '<div class="msg warn">Nothing to export yet.</div>'; return; } const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([tradeCsv(s.trades)], { type: 'text/csv' })); a.download = 'tape-delta-journal-' + new Date().toISOString().slice(0, 10) + '.csv'; document.body.appendChild(a); a.click(); a.remove(); };
+  }
   // ---------- footprint (ticks are loaded per candle on demand, real aggregated trades) ----------
   fpWant(rowRange) { const st = nice(Math.max(rowRange, 1e-8)); if (st !== this.fpStep) { this.fpStep = st; this.fpCache = new Map(); } }
   fpEnsure(i0, i1) { const c = this.candles; for (let i = Math.max(0, i0); i <= Math.min(c.length - 1, i1); i++) this.ensureTicks(c[i].t); }
@@ -177,8 +243,9 @@ class App {
     el.innerHTML = `<div class="grp">${k.label} · score ${k.score}/100 · other side ${k.oppScore}</div><div class="why">${esc(k.why)}</div>${k.factors.map(row).join('') || '<div class="note">No aligned factors.</div>'}
     <div class="grp">Levels</div>${k.inv != null ? `<div class="kv"><span>Invalidation</span><span>${fmt(k.inv, d)}</span></div>` : ''}${k.tgt != null ? `<div class="kv"><span>Target (nearest liquidity)</span><span>${fmt(k.tgt, d)}</span></div>` : ''}${k.rr != null ? `<div class="kv"><span>Reward : risk</span><span>${k.rr.toFixed(2)}</span></div>` : ''}${k.inv == null && k.tgt == null ? '<div class="note">No clean invalidation or target on this chart.</div>' : ''}
     <div class="grp">Against (${k.dir === 'bull' ? 'short' : 'long'} side)</div>${k.opp.map(row).join('') || '<div class="note">Nothing aligned against.</div>'}
-    <div class="note">Rules-based checklist: structure, liquidity sweep, premium/discount + OTE, order block / FVG, killzone, order flow, day bias. It is a way to read the chart, not a signal, and it has not been backtested.</div>`;
+    <div class="row"><button class="btn" id="whyPlan">Plan this setup (paper)</button></div><div class="note">Rules-based checklist: structure, liquidity sweep, premium/discount + OTE, order block / FVG, killzone, order flow, day bias. It is a way to read the chart, not a signal, and it has not been backtested.</div>`; this.hookWhy();
   }
+  hookWhy() { const b = $('#whyPlan'); if (b) b.onclick = () => this.openPlanner(); }
   renderData() {
     const el = $('#pane-data'); if (!el || el.hidden) return; const I = this.integ; const c = this.candles; const tag = (t, x) => `<span class="tag ${t}">${t}</span> ${x}`;
     const sym = SYMBOLS.find(x => x.id === this.state.symbol); const lq = this.liq.stats(); const sk = this.feed.skew;
@@ -365,7 +432,7 @@ class App {
     tfs.onclick = e => { const t = e.target.dataset.tf; if (!t) return; this.exitReplay(); this.state.tf = t; this.save(); this.renderTf(); this.load(); this.renderIndCounts(); };
     this.renderTf();
     $('#ctype').value = this.state.chartType; $('#ctype').onchange = e => { this.state.chartType = e.target.value; this.save(); if (e.target.value === 'footprint') { this.chart.view.barW = Math.max(this.chart.view.barW, 76); this.chart.invalidate(); } this.chart.invalidate(); };
-    $('#bInd').onclick = () => this.openIndicators(); $('#bWs').onclick = () => this.openWorkspace();
+    $('#bPlan').onclick = () => this.openPlanner(); $('#bInd').onclick = () => this.openIndicators(); $('#bWs').onclick = () => this.openWorkspace();
     $('#bRep').onclick = () => this.replay ? this.exitReplay() : this.startReplay();
     $('#rpPlay').onclick = () => this.replayPlay(); $('#rpStep').onclick = () => { this.replayPause(); this.replayStep(); }; $('#rpExit').onclick = () => this.exitReplay();
     $('#rpMode').onchange = e => this.replayMode(+e.target.value); $('#rpBook').onclick = () => this.replayBookJump();

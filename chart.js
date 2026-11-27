@@ -100,7 +100,7 @@ export class Chart {
       if (z.sessions) for (const l of ict.levels) { this.hline(l.p, l.name, th.blue, [6, 3]); this.edge(l.p, l.name, th.blue); }
     }
     this.drawings(g, th, c);
-    this.alertLines(g, th);
+    this.alertLines(g, th); this.tradeLines(g, th);
     // last price
     const last = c[c.length - 1]; const ly = this.ymap(last.c);
     g.strokeStyle = last.c >= last.o ? th.up : th.dn; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(0, ly); g.lineTo(this.plotW, ly); g.stroke(); g.setLineDash([]);
@@ -244,6 +244,18 @@ export class Chart {
   }
   alertLines(g, th) {
     for (const a of this.app.state.alerts) { if (a.sym !== this.app.state.symbol) continue; const y = this.ymap(a.level); g.strokeStyle = th.gold; g.setLineDash([6, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(0, y); g.lineTo(this.plotW, y); g.stroke(); g.setLineDash([]); g.fillStyle = th.gold; g.font = '10px system-ui'; g.textAlign = 'left'; g.fillText('🔔 ' + fmtP(a.level, this.dec), 6, y - 7); }
+  }
+  tradeLines(g, th) {
+    const app = this.app; for (const t of app.openTrades(app.state.symbol)) {
+      const open = t.status === 'open', x0 = open && t.openedAt ? Math.max(0, this.xOf(this.idxOfT(t.openedAt))) : 0, w = this.plotW - x0; const R = app.tradeLive(t);
+      const yE = this.ymap(t.entry), yS = this.ymap(t.sl), yT = this.ymap(t.tp);
+      g.fillStyle = 'rgba(239,83,80,.10)'; g.fillRect(x0, Math.min(yE, yS), w, Math.abs(yS - yE)); g.fillStyle = 'rgba(38,166,154,.10)'; g.fillRect(x0, Math.min(yE, yT), w, Math.abs(yT - yE));
+      const ln = (y, col, dash) => { g.strokeStyle = col; g.lineWidth = 1.3; g.setLineDash(dash); g.beginPath(); g.moveTo(x0, y); g.lineTo(this.plotW, y); g.stroke(); g.setLineDash([]); };
+      ln(yE, th.blue, open ? [] : [6, 4]); ln(yS, th.dn, [4, 3]); ln(yT, th.up, [4, 3]);
+      g.font = 'bold 10px system-ui'; g.textAlign = 'left'; g.textBaseline = 'middle';
+      const tag = (y, txt, col) => { g.fillStyle = col; g.fillText(txt, 6, y - 7); };
+      tag(yE, `${t.dir.toUpperCase()} ${open ? 'open' : 'waiting'} ${fmtP(t.entry, this.dec)}${R != null ? ' · ' + (R >= 0 ? '+' : '') + R.toFixed(2) + 'R' : ''}`, th.blue); tag(yS, 'SL ' + fmtP(t.sl, this.dec), th.dn); tag(yT, 'TP ' + fmtP(t.tp, this.dec), th.up);
+    }
   }
   hit(x, y) { // find drawing near point
     let best = null, bd = 9;
