@@ -75,3 +75,7 @@ select,.btn,input{background:var(--bg);color:var(--text);border:1px solid var(--
 .pane b,.pane strong{color:var(--neon)}
 :root.light .pane b,:root.light .pane strong{color:var(--neon)}
 :root.light .kv span:last-child,:root.light .note,:root.light .why,:root.light .leg{color:var(--text)}
+
+body.bgimg::before{content:'';position:fixed;inset:0;background:#000 url(icons/bg.jpg) center/cover no-repeat;opacity:.16;z-index:0;pointer-events:none}
+body.bgimg #app{position:relative;z-index:1}
+body.bgimg #top,body.bgimg #tools{background:rgba(12,16,24,.86)}

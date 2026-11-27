@@ -157,6 +157,8 @@ export function settingsHTML(st) {
   const ar = isAr();
   return `<div class="kv"><span data-noi18n>Language / اللغة</span><span><button class="btn" data-lang="en" ${!ar ? 'style="outline:1px solid var(--gold)"' : ''}>English</button> <button class="btn" data-lang="ar" ${ar ? 'style="outline:1px solid var(--gold)"' : ''}>العربية</button></span></div>
   <div class="kv"><span data-noi18n>${ar ? 'عد تنازلي لإغلاق الشمعة' : 'Candle close countdown'}</span><span><label><input type="checkbox" id="setCd" ${st.countdown !== false ? 'checked' : ''}> ${ar ? 'إظهار' : 'show'}</label></span></div>
+  <div class="kv"><span data-noi18n>${ar ? 'توهج الشموع' : 'Candle glow'}</span><span><label><input type="checkbox" id="setGlow" ${st.candleGlow !== false ? 'checked' : ''}> ${ar ? 'تشغيل' : 'on'}</label></span></div>
+  <div class="kv"><span data-noi18n>${ar ? 'صورة الخلفية (داكنة)' : 'Background image (dimmed)'}</span><span><label><input type="checkbox" id="setBg" ${st.bgImg !== false ? 'checked' : ''}> ${ar ? 'تشغيل' : 'on'}</label></span></div>
   <div class="note" data-noi18n>${ar ? 'اللغة العربية بتغيّر اللوحات والقوائم. أسماء المصطلحات على الشارت (CHoCH, FVG...) بتفضل بالإنجليزي وفي زر الشرح (؟) تفسيرها بالعربي.' : 'Arabic changes the panels and menus. Chart labels (CHoCH, FVG...) stay in English; the Guide (?) button explains each in Arabic.'}</div>`;
 }
 export const HELP_TABS = Object.keys(H);

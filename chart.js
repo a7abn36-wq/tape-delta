@@ -2,9 +2,10 @@ import { ema, rsi, vwap, vwapBands } from './ict.js';
 import { ibor } from './ibor.js';
 import { sessionCVD, avwap, idxAtOrAfter, detectFlow, cvdDivergence, gateAbs } from './flow.js';
 const TH = {
-  dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
-  light: { bg: '#ffffff', panel: '#f4f6fa', grid: '#e6eaf1', text: '#5b6578', ax: '#1c2433', up: '#13967f', dn: '#d43b3b', cross: '#8a94a8', gold: '#b8860b', blue: '#1f6feb' },
+  dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cu: '#00ffe0', cd: '#ff3d1f', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
+  light: { bg: '#ffffff', panel: '#f4f6fa', grid: '#e6eaf1', text: '#5b6578', ax: '#1c2433', up: '#13967f', dn: '#d43b3b', cu: '#00a89a', cd: '#e0340f', cross: '#8a94a8', gold: '#b8860b', blue: '#1f6feb' },
 };
+const BG = new Image(); BG.src = 'icons/bg.jpg'; BG.onload = () => { try { window.app && window.app.chart.invalidate(); } catch (e) {} };
 const AXW = 68, AXH = 24, SUBH = 92;
 function nice(step) { const e = Math.pow(10, Math.floor(Math.log10(step))); const f = step / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; }
 function fmtP(p, dec) { return p.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }); }
@@ -47,7 +48,7 @@ export class Chart {
   }
   draw() {
     const { ctx: g, app } = this; const th = TH[app.state.theme]; this.th = th;
-    const W = this.W, H = this.H; g.clearRect(0, 0, W, H); g.fillStyle = th.bg; g.fillRect(0, 0, W, H);
+    const W = this.W, H = this.H; g.clearRect(0, 0, W, H); g.fillStyle = th.bg; g.fillRect(0, 0, W, H); if (this.app.state.bgImg !== false && th === TH.dark && BG.complete && BG.naturalWidth) { const s = Math.max(W / BG.naturalWidth, H / BG.naturalHeight), iw = BG.naturalWidth * s, ih = BG.naturalHeight * s; g.save(); g.globalAlpha = .14; g.drawImage(BG, (W - iw) / 2, (H - ih) / 2, iw, ih); g.restore(); }
     const c = this.c; if (!c.length) { g.fillStyle = th.text; g.font = '14px system-ui'; g.fillText(app.loadMsg || 'Loading...', 20, 40); return; }
     { const vis = this.plotW / this.view.barW; if (isFinite(vis)) this.view.right = Math.min(Math.max(this.view.right, vis * 0.4), c.length + vis * 0.6); } // keep some candles on screen: never scroll into an empty range
     const lay = this.layout(); this.lay = lay; const [lo, hi, i0, i1] = this.range(); this.rg = [lo, hi, i0, i1];
@@ -74,14 +75,15 @@ export class Chart {
     const fp = st.chartType === 'footprint' && bw >= 46 && (!app.replay || app.replay.cur != null);
     this.fpActive = fp; if (fp) { app.fpWant((hi - lo) / (mh / 14)); app.fpEnsure(i0, i1); }
     if (st.ind.liq && !app.replay) this.drawLiq(g, th, c, lo, hi, mh, fp);
+    { const P = { u: { w: new Path2D(), b: new Path2D(), col: th.cu }, d: { w: new Path2D(), b: new Path2D(), col: th.cd } };
     for (let i = i0; i <= i1; i++) {
-      const b = c[i], x = this.xOf(i), up = b.c >= b.o, col = up ? th.up : th.dn;
+      const b = c[i], x = this.xOf(i), up = b.c >= b.o;
       if (fp && app.drawFootprint(g, this, i, b, x, bw, th)) continue;
-      g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 1;
-      g.beginPath(); g.moveTo(Math.round(x) + .5, this.ymap(b.h)); g.lineTo(Math.round(x) + .5, this.ymap(b.l)); g.stroke();
-      const yo = this.ymap(b.o), yc = this.ymap(b.c), w = Math.max(1, bw * 0.7);
-      g.fillRect(x - w / 2, Math.min(yo, yc), w, Math.max(1, Math.abs(yo - yc)));
+      const Q = up ? P.u : P.d, xr = Math.round(x) + .5; Q.w.moveTo(xr, this.ymap(b.h)); Q.w.lineTo(xr, this.ymap(b.l));
+      const yo = this.ymap(b.o), yc = this.ymap(b.c), w = Math.max(1, bw * 0.7); Q.b.rect(x - w / 2, Math.min(yo, yc), w, Math.max(1, Math.abs(yo - yc)));
     }
+    const glow = st.candleGlow !== false;
+    for (const Q of [P.d, P.u]) { g.strokeStyle = Q.col; g.fillStyle = Q.col; if (glow) { g.save(); g.globalAlpha = .2; g.lineWidth = 4; g.stroke(Q.w); g.lineWidth = 3; g.stroke(Q.b); g.restore(); } g.lineWidth = 1; g.stroke(Q.w); g.fill(Q.b); } }
     // overlays
     const ind = st.ind; const line = (arr, col, w = 1.3) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); let s = false; for (let i = Math.max(0, i0 - 1); i <= Math.min(c.length - 1, i1 + 1); i++) { if (isNaN(arr[i])) { s = false; continue; } const x = this.xOf(i), y = this.ymap(arr[i]); if (!s) { g.moveTo(x, y); s = true; } else g.lineTo(x, y); } g.stroke(); };
     const lastB = c[c.length - 1]; const cacheKey = c.length + ':' + lastB.t + ':' + c[0].t + ':' + lastB.c + ':' + lastB.v;
