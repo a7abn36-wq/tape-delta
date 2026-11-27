@@ -71,7 +71,7 @@ export class Bookmap {
       if (!this.open_ || !this.lm) return; const lm = this.lm, age = Date.now() - this.t0;
       if (!this.fellBack && lm.mode === 'ws' && ((lm.status !== 'live' && age > 14000) || (lm.closes || 0) >= 3)) { this.fellBack = true; lm.startRest(SRC, this.sym, 500); }
       if (this.tmode === 'ws' && this.tws === 0 && age > 9000) this._tradesRest();
-      if (this.dirty || Date.now() - this.lastDraw > 2000) this.draw();
+      this._track(); if (Date.now() - (this._ls || 0) > 4000) { this._ls = Date.now(); this._stat(); } if (this.dirty || Date.now() - this.lastDraw > 2000) this.draw();
     }, 700);
   }
   /* ---------- trades ---------- */
@@ -115,6 +115,27 @@ export class Bookmap {
     if (pl >= pmax * 0.9998 && cl <= cmax - 0.4 * rng) return { dir: 'bear', pl, pmax, cl, cmax };
     if (pl <= pmin * 1.0002 && cl >= cmin + 0.4 * rng) return { dir: 'bull', pl, pmin, cl, cmin };
     return null;
+  }
+
+  /* ---------- self-recorded hit-rate (localStorage, only what this page saw) ---------- */
+  _sload() { if (this._S) return this._S; try { this._S = JSON.parse(localStorage.getItem('bm_stats_v1')) || { ev: [], base: [] }; } catch { this._S = { ev: [], base: [] }; } return this._S; }
+  _ssave() { const S = this._S; if (!S) return; S.ev = S.ev.slice(-1000); S.base = S.base.slice(-3000); try { localStorage.setItem('bm_stats_v1', JSON.stringify(S)); } catch { } }
+  _track() {
+    const lm = this.lm; if (!lm || !lm.snaps.length) return; const S = this._sload(), now = Date.now(), last = lm.snaps[lm.snaps.length - 1]; if (now - last.t > 8000) return; let ch = false;
+    if (now - (this._lb || 0) >= 30000) { this._lb = now; S.base.push({ sym: this.sym, t: now, m0: last.mid, r2: null, r5: null }); ch = true; }
+    for (const e of this._events()) { if (!['A', 'X', 'P'].includes(e.cls)) continue; const k = this.sym + e.t + e.side + Math.round(e.p); if (S.ev.some(x => x.k === k)) continue; const up = (e.cls === 'A' && e.side === 'b') || (e.cls === 'X' && e.side === 'a') || (e.cls === 'P' && e.side === 'a'); S.ev.push({ k, cls: e.cls, sym: this.sym, t: now, dir: up ? 1 : -1, m0: last.mid, r2: null, r5: null }); ch = true; }
+    const dv = this._div(); if (dv && now - (this._ld || 0) > 300000) { this._ld = now; S.ev.push({ k: 'D' + now, cls: 'DIV', sym: this.sym, t: now, dir: dv.dir === 'bull' ? 1 : -1, m0: last.mid, r2: null, r5: null }); ch = true; }
+    const res = r => { for (const [f, h] of [['r2', 120e3 * (this._hs || 1)], ['r5', 300e3 * (this._hs || 1)]]) { if (r[f] !== null) continue; if (now < r.t + h) continue; let v = 'x'; if (r.sym === this.sym) { let b = null, bd = 1e12; for (const q of lm.snaps) { const d = Math.abs(q.t - (r.t + h)); if (d < bd) { bd = d; b = q; } } if (b && bd <= 15000) v = (b.mid - r.m0) / r.m0 * 100; } r[f] = v; ch = true; } };
+    S.ev.forEach(res); S.base.forEach(res); if (ch) this._ssave();
+  }
+  _wilson(k, n) { if (!n) return [0, 1]; const z = 1.96, p = k / n, d = 1 + z * z / n, c = p + z * z / (2 * n), a = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return [(c - a) / d, (c + a) / d]; }
+  _stat() {
+    const el = $('#bmStat'); if (!el) return; const ar = isAr(), S = this._sload(), MIN = 30; const f = x => Math.round(x * 100);
+    const row = (name, arr, f2) => { const m = arr.map(x => x[f2]).filter(v => typeof v === 'number'); const dirs = arr.filter(x => typeof x[f2] === 'number'); const mv = dirs.filter(x => x[f2] !== 0); const k = mv.filter(x => x[f2] * x.dir > 0).length, n = mv.length; if (n === 0) return `<td>${n}</td><td>-</td>`; const [lo, hi] = this._wilson(k, n); return `<td>${n}</td><td>${n < MIN ? (ar ? 'مفيش بيانات كفاية' : 'not enough data') : `${f(k / n)}% (${f(lo)}-${f(hi)})`}</td>`; };
+    const bs = f2 => { const mv = S.base.map(x => x[f2]).filter(v => typeof v === 'number' && v !== 0); if (!mv.length) return [0, 0]; return [mv.length, mv.filter(v => v > 0).length / mv.length]; };
+    const b2 = bs('r2'), b5 = bs('r5'); const names = { A: ar ? 'A جدار اتمتص' : 'A absorbed', X: ar ? 'X جدار اتكسر' : 'X broken', P: ar ? 'P جدار اتسحب' : 'P pulled', DIV: ar ? 'تباعد CVD' : 'CVD divergence' };
+    const rows = Object.keys(names).map(c => { const arr = S.ev.filter(x => x.cls === c); return `<tr><td>${names[c]}</td>${row(c, arr, 'r2')}${row(c, arr, 'r5')}</tr>`; }).join('');
+    el.innerHTML = `<b>${ar ? 'نسبة النجاح (مسجلة ذاتيًا)' : 'Hit-rate (self-recorded)'}</b><div class="bmnote">${ar ? 'بنسجل كل علامة وبعدين نقيس السعر بعد دقيقتين و5 دقايق. النجاح = السعر اتحرك في الاتجاه المتوقع من العلامة. بيتسجل بس وإنت فاتح الصفحة، وعلى المتصفح ده بس.' : 'Each marker is logged, then price is measured 2 and 5 minutes later. Hit = price moved the way the marker implies. Recorded only while this page is open, on this browser only.'}</div><table><tr><th></th><th>n 2m</th><th>${ar ? 'نجاح 2د (فاصل 95%)' : 'hit 2m (95% CI)'}</th><th>n 5m</th><th>${ar ? 'نجاح 5د' : 'hit 5m'}</th></tr>${rows}</table><div class="bmnote">${ar ? 'خط الأساس: لو اخترنا أي لحظة عشوائية، السعر بيطلع' : 'Baseline: at a random moment price went up'} ${b2[0] ? f(b2[1]) + '% (2m, n=' + b2[0] + ')' : '-'} ${b5[0] ? '/ ' + f(b5[1]) + '% (5m, n=' + b5[0] + ')' : ''}. ${ar ? 'النجاح لازم يتقارن بالخط ده، وتحت ' + MIN + ' حالة الرقم مالوش قيمة. لسه مفيش ميزة مثبتة.' : 'Compare hit% with this baseline. Below ' + MIN + ' cases the number means nothing. No edge is proven.'}</div>`;
   }
   /* ---------- drawing ---------- */
   geom() { const W = this.W, H = this.H, axisH = 16, cvdH = Math.round(H * 0.17), heatH = H - cvdH - axisH - 4; return { W, H, axisH, cvdH, heatH, plotW: W - 54 }; }
