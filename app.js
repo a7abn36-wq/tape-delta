@@ -35,7 +35,7 @@ class App {
   }
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { this.toast('Could not save settings: ' + e.message); } }
   tfMs() { return TFS[this.state.tf]; }
-  visibleCandles() { return this.replay ? this.candles.slice(0, this.replay.idx + 1) : this.candles; }
+  visibleCandles() { return this.replay ? (this.replay.vis || this.candles.slice(0, this.replay.idx + 1)) : this.candles; }
   toast(msg, ms = 6000) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; $('#toasts').appendChild(d); while ($('#toasts').children.length > 4) $('#toasts').firstChild.remove(); setTimeout(() => d.remove(), ms); }
   applyTheme() { document.documentElement.classList.toggle('light', this.state.theme === 'light'); $('meta[name=theme-color]').content = this.state.theme === 'light' ? '#ffffff' : '#0b0e14'; this.chart.invalidate(); }
   setFeedStatus(s) { this.feedStatus = s; this.renderFeed(); }
@@ -106,7 +106,7 @@ class App {
     I.lastAggId = t.id;
     this.trades.push(t); if (this.trades.length > 20000) this.trades.splice(0, 5000);
     const ct = Math.floor(t.t / this.tfMs()) * this.tfMs(); let e = this.ticks.get(ct); if (!e) { e = { arr: [], status: 'live', lastId: 0 }; this.ticks.set(ct, e); }
-    if (t.id > e.lastId) { e.arr.push([t.p, t.q, t.side === 'buy' ? 1 : 0, t.id]); e.lastId = t.id; }
+    if (t.id > e.lastId) { e.arr.push([t.p, t.q, t.side === 'buy' ? 1 : 0, t.id, t.t]); e.lastId = t.id; }
     this.liq.addTrade(t);
     this.tape.unshift(t); if (this.tape.length > 40) this.tape.length = 40; this.setPrice(t.p);
     if (!this._tapeT) this._tapeT = setTimeout(() => { this._tapeT = null; this.renderTape(); }, 400);
@@ -133,9 +133,9 @@ class App {
     this.chart.invalidate(); this.renderData();
   }
   rowsFor(ct) {
-    const e = this.ticks.get(ct); if (!e || !e.arr.length || !this.fpStep) return null; const c = this.fpCache.get(ct); if (c && c.step === this.fpStep && c.n === e.arr.length) return c.rows;
-    const m = new Map(), st = this.fpStep; for (const t of e.arr) { const k = Math.floor(t[0] / st + 1e-9); let r = m.get(k); if (!r) { r = [0, 0]; m.set(k, r); } r[t[2]] += t[1]; }
-    const rows = [...m.entries()].sort((a, b) => a[0] - b[0]); this.fpCache.set(ct, { step: st, n: e.arr.length, rows }); return rows;
+    const e = this.ticks.get(ct); if (!e || !e.arr.length || !this.fpStep) return null; const rp = this.replay && this.replay.cur != null && this.candles[this.replay.idx] && this.candles[this.replay.idx].t === ct; const arr = rp ? this.ticksUpTo(ct) : e.arr; const c = rp ? null : this.fpCache.get(ct); if (c && c.step === this.fpStep && c.n === arr.length) return c.rows;
+    const m = new Map(), st = this.fpStep; for (const t of arr) { const k = Math.floor(t[0] / st + 1e-9); let r = m.get(k); if (!r) { r = [0, 0]; m.set(k, r); } r[t[2]] += t[1]; }
+    const rows = [...m.entries()].sort((a, b) => a[0] - b[0]); if (!rp) this.fpCache.set(ct, { step: st, n: arr.length, rows }); return rows;
   }
   drawFootprint(g, ch, i, b, x, bw, th) {
     const e = this.ticks.get(b.t); const rows = this.rowsFor(b.t);
@@ -150,7 +150,7 @@ class App {
       if (h >= 9) { g.font = (h >= 12 ? 10 : 8) + 'px ui-monospace,monospace'; g.textBaseline = 'middle'; const imb = r[1] >= 3 * r[0] && r[1] > 0, imbS = r[0] >= 3 * r[1] && r[0] > 0; g.fillStyle = imbS ? '#ff8a80' : th.ax; g.textAlign = 'right'; g.fillText(fmtV(r[0]), x - 3, y1 + h / 2); g.fillStyle = imb ? '#69f0ae' : th.ax; g.textAlign = 'left'; g.fillText(fmtV(r[1]), x + 3, y1 + h / 2); }
     }
     g.strokeStyle = th.cross; g.lineWidth = 1; g.beginPath(); g.moveTo(x, ch.ymap(b.h)); g.lineTo(x, ch.ymap(b.l)); g.stroke();
-    let buy = 0, sell = 0; for (const t of e.arr) { if (t[2]) buy += t[1]; else sell += t[1]; } const d = e.status === 'full' || e.status === 'live' ? buy - sell : b.d;
+    let buy = 0, sell = 0; for (const t of this.ticksUpTo(b.t)) { if (t[2]) buy += t[1]; else sell += t[1]; } const d = e.status === 'full' || e.status === 'live' ? buy - sell : b.d;
     g.font = 'bold 10px ui-monospace,monospace'; g.textAlign = 'center'; g.fillStyle = d >= 0 ? th.up : th.dn; g.fillText('Δ ' + fmtV(d), x, ch.ymap(b.l) + 11);
     if (e.status !== 'full') { g.fillStyle = th.gold; g.font = '9px system-ui'; g.fillText(e.status === 'partial' ? 'partial' : e.status === 'loading' ? 'loading' : e.status === 'live' ? 'partial (live only)' : e.status, x, ch.ymap(b.h) - 8); }
     g.textAlign = 'left'; return true;
@@ -280,18 +280,20 @@ class App {
     $('#legend').innerHTML = `<b>${k}</b> O <b class="${up ? 'u' : 'd'}">${fmt(b.o, d)}</b> H <b class="${up ? 'u' : 'd'}">${fmt(b.h, d)}</b> L <b class="${up ? 'u' : 'd'}">${fmt(b.l, d)}</b> C <b class="${up ? 'u' : 'd'}">${fmt(b.c, d)}</b> Vol <b>${fmtV(b.v)}</b> Δ <b class="${dl >= 0 ? 'u' : 'd'}">${dl >= 0 ? '+' : ''}${fmtV(dl)}</b>`;
   }
   renderTape() {
-    const el = $('#pane-tape'); if (!this.tape.length) { el.innerHTML = '<div class="note">Waiting for trades from the exchange feed...</div>'; return; }
-    const d = decimals(this.tape[0].p); const big = this.tape.map(t => t.q).sort((a, b) => b - a)[Math.floor(this.tape.length * 0.15)] || 0;
-    el.innerHTML = this.tape.map(t => `<div class="trow ${t.side}${t.q >= big && big > 0 ? ' big' : ''}"><span>${new Date(t.t).toLocaleTimeString([], { hour12: false })}</span><span>${fmt(t.p, d)}</span><span>${fmtV(t.q)}</span></div>`).join('');
+    const el = $('#pane-tape'); const rp = this.replay; const tape = rp ? (rp.cur != null ? this.replayTape() : null) : this.tape; if (rp && !tape) { el.innerHTML = '<div class="note">Replay is in candle mode, so there is no tape. Switch the replay step to 1s, 5s or 15s to replay real trades.</div>'; return; } const T = tape; if (!T.length) { el.innerHTML = '<div class="note">Waiting for trades from the exchange feed...</div>'; return; }
+    const d = decimals(T[0].p); const big = T.map(t => t.q).sort((a, b) => b - a)[Math.floor(T.length * 0.15)] || 0;
+    el.innerHTML = T.map(t => `<div class="trow ${t.side}${t.q >= big && big > 0 ? ' big' : ''}"><span>${new Date(t.t).toLocaleTimeString([], { hour12: false })}</span><span>${fmt(t.p, d)}</span><span>${fmtV(t.q)}</span></div>`).join('');
   }
   renderDom() {
-    const el = $('#pane-dom'); const dp = this.depth; if (!dp) { el.innerHTML = '<div class="note">Loading order book...</div>'; return; }
+    const el = $('#pane-dom'); let dp = this.depth; const rp = this.replay;
+    if (rp) { if (rp.cur == null) { el.innerHTML = '<div class="note">Replay is in candle mode, so there is no order book. Switch the replay step to 1s, 5s or 15s.</div>'; return; } dp = this.replayBook(); if (!dp) { el.innerHTML = '<div class="note">No order book was recorded for this moment. Binance does not publish historical depth, so only moments since this page opened can be replayed. Tap "Book" in the replay bar to jump to the first recorded moment.</div>'; return; } }
+    if (!dp) { el.innerHTML = '<div class="note">Loading order book...</div>'; return; }
     const d = decimals(dp.asks[0][0]); const asks = dp.asks.slice(0, 14); let cum = 0; const rows = asks.map(a => { cum += a[1]; return [a[0], a[1], cum]; }); const mx = rows[rows.length - 1][2];
     const ah = rows.slice().reverse().map(r => `<div class="dr ask"><i style="width:${r[2] / mx * 100}%"></i><span class="p">${fmt(r[0], d)}</span><span>${fmtV(r[1])}</span><span>${fmtV(r[2])}</span></div>`).join('');
     cum = 0; const bids = dp.bids.slice(0, 14).map(b => { cum += b[1]; return [b[0], b[1], cum]; }); const mb = Math.max(mx, bids[bids.length - 1][2]);
     const bh = bids.map(r => `<div class="dr bid"><i style="width:${r[2] / mb * 100}%"></i><span class="p">${fmt(r[0], d)}</span><span>${fmtV(r[1])}</span><span>${fmtV(r[2])}</span></div>`).join('');
     const sp = dp.asks[0][0] - dp.bids[0][0]; const imb = bids[bids.length - 1][2] / (bids[bids.length - 1][2] + mx) * 100;
-    el.innerHTML = `<div class="note">Price · size · cumulative (14 levels)</div><div class="dom">${ah}<div class="spread">spread ${fmt(sp, d)} · bid share ${imb.toFixed(0)}%</div>${bh}</div>`;
+    el.innerHTML = `<div class="note">${rp ? 'REPLAY book from ' + new Date(dp.t).toLocaleTimeString([], { hour12: false }) + ' (recorded, bins of ' + this.liq.bin + ') · ' : ''}Price · size · cumulative (14 levels)</div><div class="dom">${ah}<div class="spread">spread ${fmt(sp, d)} · bid share ${imb.toFixed(0)}%</div>${bh}</div>`;
   }
   renderStats() {
     const el = $('#pane-stats'); if (!el) return; const c = this.candles, last = c[c.length - 1]; const t = this.ticker, d = last ? decimals(last.c) : 2;
@@ -312,14 +314,49 @@ class App {
   }
   // ---------- replay ----------
   startReplay() {
-    if (this.replay || this.candles.length < 80) return; const n = this.candles.length; this.replay = { idx: n - 60, playing: false, saved: this.chart.snapshot(), t: null };
-    $('#replaybar').hidden = false; const sl = $('#rpSlider'); sl.min = 50; sl.max = n - 1; sl.value = this.replay.idx; this.chart.cache = {}; this.recomputeICT(true); this.chart.view.right = this.replay.idx + 6; this.replayUpdate(); $('#bRep').classList.add('on');
+    if (this.replay || this.candles.length < 80) return; const n = this.candles.length; this.replay = { idx: n - 60, playing: false, saved: this.chart.snapshot(), t: null, cur: null, step: 0 };
+    $('#replaybar').hidden = false; $('#rpMode').value = '0'; const sl = $('#rpSlider'); sl.min = 50; sl.max = n - 1; sl.value = this.replay.idx; this.chart.cache = {}; this.chart.view.right = this.replay.idx + 6; this.replayUpdate(); $('#bRep').classList.add('on');
   }
-  replayUpdate() { const r = this.replay; if (!r) return; $('#rpInfo').textContent = `${r.idx + 1}/${this.candles.length}`; $('#rpSlider').value = r.idx; $('#rpPlay').textContent = r.playing ? 'Pause' : 'Play'; this.chart.cache = {}; this.recomputeICT(true); this.updateLegend(null); this.chart.invalidate(); }
-  replayStep() { const r = this.replay; if (!r) return; if (r.idx >= this.candles.length - 1) { this.replayPause(); return; } r.idx++; if (this.chart.view.right < r.idx + 3) this.chart.view.right = r.idx + 6; this.replayUpdate(); }
+  partialCandle(i, cur) {
+    const c = this.candles[i]; const e = this.ticks.get(c.t); if (!e) return null; let p = null, h = c.o, l = c.o, v = 0, bv = 0, n = 0, last = c.o;
+    for (const t of e.arr) { if (t[4] > cur) break; n++; v += t[1]; if (t[2]) bv += t[1]; if (t[0] > h) h = t[0]; if (t[0] < l) l = t[0]; last = t[0]; }
+    return { t: c.t, o: c.o, h, l, c: last, v, bv, sv: v - bv, d: 2 * bv - v, n, closed: false };
+  }
+  ticksUpTo(ct) { const e = this.ticks.get(ct); if (!e) return []; const r = this.replay; if (r && r.cur != null && this.candles[r.idx] && this.candles[r.idx].t === ct) return e.arr.filter(t => t[4] <= r.cur); return e.arr; }
+  replayTape() {
+    const r = this.replay; const out = []; for (let i = r.idx; i >= Math.max(0, r.idx - 2) && out.length < 40; i--) { const arr = this.ticksUpTo(this.candles[i].t); for (let k = arr.length - 1; k >= 0 && out.length < 40; k--) if (i < r.idx || arr[k][4] <= r.cur) out.push({ id: arr[k][3], t: arr[k][4], p: arr[k][0], q: arr[k][1], side: arr[k][2] ? 'buy' : 'sell' }); }
+    return out;
+  }
+  replayBook() {
+    const r = this.replay; if (!r || r.cur == null) return null; let best = null; for (const sn of this.liq.snaps) if (!best || Math.abs(sn.t - r.cur) < Math.abs(best.t - r.cur)) best = sn; if (!best || Math.abs(best.t - r.cur) > 6000) return null;
+    const bin = this.liq.bin, mid = best.mid; const asks = best.A.map(([k, q]) => [(k + 0.5) * bin, q]).filter(x => x[0] > mid).sort((a, b) => a[0] - b[0]); const bids = best.B.map(([k, q]) => [(k + 0.5) * bin, q]).filter(x => x[0] < mid).sort((a, b) => b[0] - a[0]);
+    return asks.length && bids.length ? { bids, asks, t: best.t } : null;
+  }
+  replayUpdate() {
+    const r = this.replay; if (!r) return; const base = this.candles.slice(0, r.idx + (r.cur == null ? 1 : 0)); if (r.cur != null) { const pc = this.partialCandle(r.idx, r.cur); base.push(pc || { ...this.candles[r.idx], h: this.candles[r.idx].o, l: this.candles[r.idx].o, c: this.candles[r.idx].o, v: 0, bv: 0, sv: 0, d: 0 }); } r.vis = base;
+    const tm = r.cur != null ? ' ' + new Date(r.cur).toLocaleTimeString([], { hour12: false }) : '';
+    $('#rpInfo').textContent = `${r.idx + 1}/${this.candles.length}${tm}`; $('#rpSlider').value = r.idx; $('#rpPlay').textContent = r.playing ? 'Pause' : 'Play'; this.chart.cache = {}; this.recomputeICT(true); this.updateLegend(null); this.renderTape(); this.renderDom(); this.chart.invalidate();
+  }
+  followReplay() { const ch = this.chart, r = this.replay; const x = ch.xOf(r.idx); if (x > ch.plotW - 6 || x < 20) ch.view.right = r.idx + (ch.view.barW >= 40 ? 1.2 : 6); }
+  replayStep() {
+    const r = this.replay; if (!r) return;
+    if (r.step > 0) {
+      const ct = this.candles[r.idx].t, tf = this.tfMs(), e = this.ticks.get(ct); if (!e || e.status === 'loading' || e.status === 'live' || e.status === 'error') { this.ensureTicks(ct); this.chart.invalidate(); return; }
+      if (e.status === 'skipped') { this.toast('Too many trades in this candle to replay on a phone. Use candle mode.'); this.replayPause(); return; }
+      r.cur = (r.cur ?? ct) + r.step; if (r.cur > Date.now()) { r.cur = Date.now(); this.replayPause(); }
+      if (r.cur >= ct + tf) { if (r.idx >= this.candles.length - 1) { this.replayPause(); return; } r.idx++; r.cur = this.candles[r.idx].t; this.ensureTicks(r.cur); if (r.idx + 1 < this.candles.length) this.ensureTicks(this.candles[r.idx + 1].t); }
+      this.followReplay(); this.replayUpdate(); return;
+    }
+    if (r.idx >= this.candles.length - 1) { this.replayPause(); return; } r.idx++; this.followReplay(); this.replayUpdate();
+  }
+  replayMode(step) { const r = this.replay; if (!r) return; r.step = step; if (step > 0) { r.cur = this.candles[r.idx].t; this.ensureTicks(r.cur); } else r.cur = null; this.replayUpdate(); }
+  replayBookJump() {
+    if (!this.liq.snaps.length) { this.toast('No order book recorded yet. Wait a few seconds after the page opens.'); return; } if (!this.replay) this.startReplay(); const r = this.replay; if (!r) return; this.replayPause();
+    const t0 = this.liq.snaps[0].t, tf = this.tfMs(); const i = this.candles.findIndex(c => c.t <= t0 && t0 < c.t + tf); if (i < 0) return; r.idx = i; r.step = 1000; $('#rpMode').value = '1000'; r.cur = t0; this.ensureTicks(this.candles[i].t); this.chart.view.right = i + (this.chart.view.barW >= 40 ? 1.2 : 6); $('#rpSlider').max = this.candles.length - 1; this.replayUpdate(); this.toast('Replaying from the first recorded order book moment.');
+  }
   replayPause() { const r = this.replay; if (!r) return; r.playing = false; clearInterval(r.t); this.replayUpdate(); }
   replayPlay() { const r = this.replay; if (!r) return; if (r.playing) return this.replayPause(); r.playing = true; r.t = setInterval(() => this.replayStep(), +$('#rpSpeed').value); this.replayUpdate(); }
-  exitReplay() { const r = this.replay; if (!r) return; clearInterval(r.t); this.replay = null; $('#replaybar').hidden = true; $('#bRep').classList.remove('on'); this.chart.restore(r.saved); this.chart.cache = {}; this.recomputeICT(true); this.updateLegend(null); }
+  exitReplay() { const r = this.replay; if (!r) return; clearInterval(r.t); this.replay = null; this.renderTape(); this.renderDom(); $('#replaybar').hidden = true; $('#bRep').classList.remove('on'); this.chart.restore(r.saved); this.chart.cache = {}; this.recomputeICT(true); this.updateLegend(null); }
   // ---------- UI ----------
   buildUI() {
     const sym = $('#sym'); sym.innerHTML = SYMBOLS.map(s => `<option value="${s.id}">${s.id} · ${s.name}</option>`).join(''); sym.value = this.state.symbol;
@@ -331,7 +368,8 @@ class App {
     $('#bInd').onclick = () => this.openIndicators(); $('#bWs').onclick = () => this.openWorkspace();
     $('#bRep').onclick = () => this.replay ? this.exitReplay() : this.startReplay();
     $('#rpPlay').onclick = () => this.replayPlay(); $('#rpStep').onclick = () => { this.replayPause(); this.replayStep(); }; $('#rpExit').onclick = () => this.exitReplay();
-    $('#rpSlider').oninput = e => { this.replayPause(); this.replay.idx = +e.target.value; this.chart.view.right = this.replay.idx + 6; this.replayUpdate(); };
+    $('#rpMode').onchange = e => this.replayMode(+e.target.value); $('#rpBook').onclick = () => this.replayBookJump();
+    $('#rpSlider').oninput = e => { this.replayPause(); this.replay.idx = +e.target.value; if (this.replay.step > 0) { this.replay.cur = this.candles[this.replay.idx].t; this.ensureTicks(this.replay.cur); } this.chart.view.right = this.replay.idx + 6; this.replayUpdate(); };
     $('#rpSpeed').onchange = () => { if (this.replay?.playing) { this.replayPause(); this.replayPlay(); } };
     const tzb = $('#bTz'); tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; tzb.onclick = () => { this.state.tz = this.state.tz === 'UTC' ? 'local' : 'UTC'; tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; this.save(); this.chart.invalidate(); };
     $('#bTheme').onclick = () => { this.state.theme = this.state.theme === 'dark' ? 'light' : 'dark'; this.save(); this.applyTheme(); };

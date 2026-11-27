@@ -35,6 +35,7 @@
       <div id="replaybar" hidden>
         <button class="btn" id="rpPlay">Play</button><button class="btn" id="rpStep">Step ▶</button>
         <select id="rpSpeed"><option value="900">Slow</option><option value="400" selected>Normal</option><option value="120">Fast</option></select>
+        <select id="rpMode" title="Replay step"><option value="0" selected>Step: candle</option><option value="1000">Step: 1 s</option><option value="5000">Step: 5 s</option><option value="15000">Step: 15 s</option></select><button class="btn" id="rpBook" title="Jump to the first moment with a recorded order book">Book</button>
         <input type="range" id="rpSlider" min="0" max="100" value="0"><span id="rpInfo"></span>
         <button class="btn" id="rpExit">Exit replay</button>
       </div>

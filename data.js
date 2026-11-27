@@ -57,7 +57,7 @@ export async function fetchTrades(src, sym, limit = 1000, endTime) {
 export async function fetchTickWindow(src, sym, t0, t1, maxPages = 30) {
   const out = []; let u = `${src.rest}/aggTrades?symbol=${sym}&startTime=${t0}&endTime=${t1}&limit=1000`; let complete = false;
   for (let p = 0; p < maxPages; p++) {
-    const a = await jget(u, 10000); for (const x of a) { if (x.T > t1) { complete = true; break; } out.push([+x.p, +x.q, x.m ? 0 : 1, x.a]); }
+    const a = await jget(u, 10000); for (const x of a) { if (x.T > t1) { complete = true; break; } out.push([+x.p, +x.q, x.m ? 0 : 1, x.a, x.T]); }
     if (complete || a.length < 1000) { complete = true; break; }
     u = `${src.rest}/aggTrades?symbol=${sym}&fromId=${a[a.length - 1].a + 1}&limit=1000`;
   }

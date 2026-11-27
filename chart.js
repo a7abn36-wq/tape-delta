@@ -69,7 +69,7 @@ export class Chart {
       if (z.ob) for (const o of ict.ob) { const x = this.xOf(o.i) - bw / 2; g.fillStyle = o.dir === 'bull' ? 'rgba(76,141,255,.22)' : 'rgba(230,120,60,.22)'; g.fillRect(x, this.ymap(o.hi), this.plotW - x, Math.max(1, this.ymap(o.lo) - this.ymap(o.hi))); g.strokeStyle = o.dir === 'bull' ? '#4c8dff' : '#e6783c'; g.strokeRect(x, this.ymap(o.hi), this.plotW - x, Math.max(1, this.ymap(o.lo) - this.ymap(o.hi))); this.label((o.dir === 'bull' ? 'Bull' : 'Bear') + ' OB', Math.max(x, 2) + 2, this.ymap(o.lo) - 7, o.dir === 'bull' ? '#4c8dff' : '#e6783c'); }
     }
     // candles / footprint
-    const fp = st.chartType === 'footprint' && bw >= 46 && !app.replay;
+    const fp = st.chartType === 'footprint' && bw >= 46 && (!app.replay || app.replay.cur != null);
     this.fpActive = fp; if (fp) { app.fpWant((hi - lo) / (mh / 14)); app.fpEnsure(i0, i1); }
     if (st.ind.liq && !app.replay) this.drawLiq(g, th, c, lo, hi, mh, fp);
     for (let i = i0; i <= i1; i++) {
@@ -106,7 +106,7 @@ export class Chart {
     g.strokeStyle = last.c >= last.o ? th.up : th.dn; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(0, ly); g.lineTo(this.plotW, ly); g.stroke(); g.setLineDash([]);
     if (app.replay) { g.fillStyle = th.gold; g.font = 'bold 11px system-ui'; g.textAlign = 'left'; g.fillText('REPLAY', 8, mh - 12); }
     if (st.chartType === 'footprint' && !fp && !app.replay) { g.fillStyle = th.gold; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText('Zoom in (scroll or pinch) to see footprint cells', 8, mh - 12); }
-    if (st.chartType === 'footprint' && app.replay) { g.fillStyle = th.gold; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText('Footprint needs tick data: not available in replay', 8, mh - 12); }
+    if (st.chartType === 'footprint' && app.replay && app.replay.cur == null) { g.fillStyle = th.gold; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText('Footprint needs tick data: not shown in candle-step replay. Switch step to 1 s / 5 s / 15 s', 8, mh - 12); }
     g.restore();
     // axis tag for last price
     g.fillStyle = last.c >= last.o ? th.up : th.dn; g.fillRect(this.plotW, ly - 9, AXW, 18); g.fillStyle = '#fff'; g.font = 'bold 11px ui-monospace,Menlo,monospace'; g.textAlign = 'left'; g.fillText(fmtP(last.c, dec), this.plotW + 5, ly);
