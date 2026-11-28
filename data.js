@@ -65,7 +65,7 @@ export const SYMBOLS = [
   { id: 'EURCAD', name: 'EUR/CAD', kinds: ['kraken'], group: 'fx' },
   { id: 'AUDJPY', name: 'AUD/JPY', kinds: ['kraken'], group: 'fx' },
 ];
-export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5, '1w': 6048e5 };
+export const TFS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3, '1h': 3600e3, '4h': 14400e3, '1d': 864e5, '1w': 6048e5 };
 export const SRC = {
   kraken: { key: 'kraken', label: 'Kraken FX (own market, REST poll)', rest: 'https://api.kraken.com/0/public', ws: [] },
   fut: { key: 'fut', label: 'Binance Futures', rest: 'https://fapi.binance.com/fapi/v1', ws: ['wss://fstream.binance.com/stream'] },
@@ -106,7 +106,7 @@ export async function resolveSource(sym, force = false) {
   const err = new Error('No live feed reachable for ' + sym + ' (' + errs.join('; ') + ')');
   err.tried = errs; throw err;
 }
-const KR_IV = { '1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 };
+const KR_IV = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 };
 const _krC = new Map(); let _krQ = Promise.resolve();
 const krSlot = () => { const p = _krQ.then(() => new Promise(r => setTimeout(r, 1100))); _krQ = p; return p; };
 async function krGet(u) { const c = _krC.get(u); if (c && Date.now() - c.t < 2500) return c.p; const p = (async () => { await krSlot(); try { return await jget(u, 10000); } catch (e) { await krSlot(); await krSlot(); return await jget(u, 10000); } })(); _krC.set(u, { t: Date.now(), p }); p.catch(() => _krC.delete(u)); return p; }

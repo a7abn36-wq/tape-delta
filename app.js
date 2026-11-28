@@ -11,6 +11,7 @@ import { wyckoff, wySignalAt, wyBacktest } from './wyckoff.js';
 import { backtest, stats as btStats, DEFAULTS as BT0 } from './backtest.js';
 import { detectFlow, stackedImb } from './flow.js';
 import { loadProfileCandles, computeProfile } from './vp.js';
+import { SK_ASSUME } from './wolfsk.js';
 import { init as i18nInit, apply as i18nApply, setLang, helpHTML, settingsHTML, isAr } from './i18n.js';
 import { GOLD, dailyATR, goldTimes, goldMarketOpen, sessionRanges, usdProxyChange, corr } from './gold.js';
 import { validate, step as tradeStep, closeManual, toR, riskDist, stats as tradeStats, csv as tradeCsv } from './planner.js';
@@ -23,7 +24,7 @@ const $ = s => document.querySelector(s);
 const KEY = 'tapedelta.v2';
 const DEF = { evAl: { choch: false, sweep: false, delta: false, touch: false },
   symbol: 'BTCUSDT', tf: '15m', chartType: 'candles', theme: 'dark', tz: 'local', tool: 'cursor',
-  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, wyckoff: true, wySig: true, vwapBands: false, cvdDiv: true, ibor: false, bubbles: false, absGate: true, vp: false, flowsig: true, absorb: false, dDiv: false, bwg: false },
+  ind: { ict: true, ema9: false, ema21: false, ema50: false, ema200: false, vwap: false, delta: true, cvd: false, scvd: true, rsi: false, avwapAuto: true, liq: true, gold: true, goldAtr: true, goldTimes: true, magnet: true, regime: true, wyckoff: true, wySig: true, vwapBands: false, cvdDiv: true, ibor: false, bubbles: false, absGate: true, vp: false, flowsig: true, absorb: false, dDiv: false, bwg: false, wsk: false },
   ict: { fvg: true, ob: true, liq: true, struct: true, kill: true, sessions: true, pd: true, ote: true },
   alerts: [], drawings: {}, templates: {}, avwaps: {}, trades: [], planRisk: 100, zoneAlerts: true,
 };
@@ -346,6 +347,18 @@ class App {
     g.textAlign = 'left'; return true;
   }
   checkData() { const r = checkCandles(this.candles, this.tfMs()); this.integ.issues = r.issues; this.integ.gaps = r.gaps; this.integ.bad = r.bad; this.renderFeed(); }
+  wskHTML() {
+    const ar = isAr(), T = (e, x) => ar ? x : e, s = this.state, k = s.sk ||= { htf: 'H4', e1: true, e2: true, max: 4 }, on = s.ind.wsk, tf = this.tfMs(), ok = tf <= 1800e3 && 1800e3 % tf === 0, R = this.wskRes;
+    const st = R && R.seqs ? R.seqs.filter(q => ['FORMING', 'ACTIVE', 'E2'].includes(q.status)).length : 0;
+    return `<div data-noi18n><div class="grp">Wolf SK · ${T('rule-based markings', 'علامات بالقواعد')} · ${T('DERIVED', 'مشتق')}</div>
+    <label class="chk"><input type="checkbox" data-g="ind" data-k="wsk" ${on ? 'checked' : ''}> ${T('Wolf SK: SK System sequence 0-A-B-C, fib entry zone, entries, stop, targets and status, drawn on the chart (needs chart 30m or lower)', 'Wolf SK: تسلسل نظام SK ‏0-A-B-C ومنطقة الدخول بالفيب والدخول والستوب والأهداف والحالة على الشارت (محتاج شارت 30 دقيقة أو أقل)')}<em>${on ? (ok ? (R && R.err ? T('not enough data yet', 'داتا مش كفاية') : st + ' ' + T('live', 'شغال')) : T('needs 30m or lower', 'محتاج 30د أو أقل')) : ''}</em></label>
+    <div class="row"><span class="muted">${T('Higher timeframe', 'الفريم الأعلى')}:</span> <button class="btn ${k.htf === 'H4' ? 'on' : ''}" data-sk="htf:H4">H4</button><button class="btn ${k.htf === 'H2' ? 'on' : ''}" data-sk="htf:H2">H2</button>
+    <button class="btn ${k.e1 ? 'on' : ''}" data-sk="e1">E1 ${T('before break of A', 'قبل كسر A')}</button><button class="btn ${k.e2 ? 'on' : ''}" data-sk="e2">E2 ${T('re-entry B-C', 'دخول تاني B-C')}</button>
+    <button class="btn" data-sk="max:${k.max === 4 ? 10 : 4}">${T('Show last', 'اعرض آخر')} ${k.max} ${T('sequences', 'تسلسل')}</button></div>
+    <div class="note"><b>${T('Honest note', 'ملحوظة صريحة')}:</b> ${T('These are rule-based markings of the SK System, not a prediction or advice. We tested this mechanical version on 6 coins (gold proxy PAXG included) with costs, out-of-sample and multiple-test correction: no proven edge (0 of 56 variants passed). A fixed 20-pip stop ($2 on gold) is smaller than normal costs and noise. Use it as a drawing helper and judge it yourself.', 'دي علامات بالقواعد لنظام SK مش توقع ولا نصيحة. اختبرنا النسخة الميكانيكية دي على 6 عملات (منها بديل الدهب PAXG) مع التكاليف وخارج العينة وتصحيح الاختبارات المتعددة: مفيش ميزة مثبتة (0 من 56 نسخة عدّت). ستوب ثابت 20 نقطة ($2 على الدهب) أصغر من التكاليف والضجيج العادي. استخدمها كأداة رسم وقيّم بنفسك.')}</div>
+    <details><summary>${T('All assumptions (discretionary choices) in one place', 'كل الافتراضات (القرارات التقديرية) في مكان واحد')}</summary><ol class="note">${SK_ASSUME.map(x => `<li>${ar ? x[1] : x[0]}</li>`).join('')}</ol></details>
+    <div class="note">${T('Legend: yellow = 0-A, dashed = A-B-C, shaded box = fib entry zone 0.5-0.667, dashed lines = pending entry levels, triangle = filled entry with red SL and green 3R target, orange lines = 161.8% / 200% extension.', 'دليل: أصفر = 0-A، متقطع = A-B-C، المربع المظلل = منطقة دخول فيب 0.5-0.667، الخطوط المتقطعة = مستويات دخول معلقة، المثلث = دخول اتنفذ مع ستوب أحمر وهدف 3R أخضر، الخطوط البرتقالية = امتداد 161.8% / 200%.')}</div></div>`;
+  }
   // ---------- ICT ----------
   recomputeICT(force) {
     const now = Date.now(); if (!force && now - this.ictT < 2500) return; this.ictT = now;
@@ -739,6 +752,7 @@ class App {
     const intraday = TFS[s.tf] <= 3600e3; const n = k => s.ind.ict && cnt[k] !== undefined ? (cnt[k] ? cnt[k] + ' in range' : 'none in range') : '';
     $('#sheetT').textContent = 'Indicators'; $('#sheetB').innerHTML =
       `<div class="grp">Order flow panes</div>${chk('ind', 'delta', 'Delta per candle')}${chk('ind', 'scvd', 'Session CVD (resets Asia / London / NY)', intraday ? '' : 'needs 1h or lower', !intraday)}${chk('ind', 'cvd', 'CVD (from first loaded bar)')}${chk('ind', 'rsi', 'RSI 14 (Wilder)')}
+      ${this.wskHTML()}
       <div class="grp">Liquidity and anchored VWAP</div>${chk('ind', 'liq', 'Liquidity map (live order book heatmap + pulled walls)')}${chk('ind', 'avwapAuto', 'Auto AVWAP from last swing high and low')}${chk('ind', 'flowsig', 'Order-flow signals: ABS absorption, EXH exhaustion, RUN stop run')}${chk('ind', 'absGate', 'Absorption (ABS) only inside liquidity zones: order block, FVG, liquidity pool, prior-day/week level')}${chk('ind', 'cvdDiv', 'Delta / CVD divergence between swing points (DIV)')}${chk('ind', 'absorb', 'Absorption (purple A): heavy one-sided taker delta but price did not follow')}${chk('ind', 'bwg', 'Black Wolf Gold: combined B/S score (sweep + absorption + AVWAP + session + trend), shows score 55+. NO proven edge, see Stats')}${chk('ind', 'dDiv', 'Delta Divergence arrows: new swing high/low with weaker delta (confirmed 3 candles later)')}${chk('ind', 'vp', 'Volume profile: POC / VAH / VAL (approximate, from 1m candles)')}<div class="row"><select id="vpMode"><option value="session">Profile: current session</option><option value="day">Profile: day (UTC)</option><option value="week">Profile: week (from Monday UTC)</option></select></div>${chk('ind', 'gold', 'Gold pack on chart: ATR levels + fix times (PAXG / XAU only)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}
       ${(s.avwaps[s.symbol] || []).map(a => `<div class="alrow"><span>AVWAP anchored ${new Date(a.t).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><button class="btn" data-avrm="${a.id}">✕</button></div>`).join('') || '<div class="note">Tap the A tool, then a candle, to anchor a VWAP there.</div>'}
       <div class="grp">Gold lines (XAUUSDT / PAXGUSDT)</div>${chk('ind', 'goldAtr', 'Daily ATR lines (ATR +0.5 / +1 / -0.5 / -1)', this.isGold() ? '' : 'gold symbols only', !this.isGold())}${chk('ind', 'goldTimes', 'Session / news time lines (COMEX settle, London open, LBMA fix)', this.isGold() ? (intraday ? '' : 'needs 1h or lower') : 'gold symbols only', !this.isGold() || !intraday)}
@@ -757,6 +771,7 @@ class App {
     $('#sheetB').querySelectorAll('input[data-g]').forEach(i => i.onchange = () => { s[i.dataset.g][i.dataset.k] = i.checked; this.save(); this.recomputeICT(true); this.chart.cache = {}; this.chart.invalidate(); if (i.dataset.k === 'vp') this.loadVP(true); if (i.dataset.k === 'ict') this.openIndicators(true); if (i.dataset.k === 'liq') { if (i.checked && this.src) this.liq.start(this.src, s.symbol); else this.liq.stop(); this.renderLiq(); } });
     $('#sheetB').querySelectorAll('[data-avrm]').forEach(b => b.onclick = () => { s.avwaps[s.symbol] = (s.avwaps[s.symbol] || []).filter(a => a.id !== b.dataset.avrm); this.save(); this.chart.invalidate(); this.openIndicators(true); });
     $('#zoneAl').onchange = e => { s.zoneAlerts = e.target.checked; this.save(); };
+    $('#sheetB').querySelectorAll('[data-sk]').forEach(b => b.onclick = () => { const k = s.sk ||= { htf: 'H4', e1: true, e2: true, max: 4 }, v = b.dataset.sk; if (v.startsWith('htf:')) k.htf = v.slice(4); else if (v.startsWith('max:')) k.max = +v.slice(4); else k[v] = !k[v]; this.save(); this.chart.bwK = null; this.chart.skK = null; this.chart.invalidate(); this.openIndicators(true); });
     $('#icReset').onclick = () => { s.ict = clone(DEF.ict); s.ind.ict = true; this.save(); this.recomputeICT(true); this.chart.invalidate(); this.openIndicators(true); };
   }
   openWorkspace() {

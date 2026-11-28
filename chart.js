@@ -2,7 +2,9 @@ import { ema, rsi, vwap, vwapBands } from './ict.js';
 import { ibor } from './ibor.js';
 import * as DR from './draw.js';
 import { absorption, deltaDiv } from './flow2.js';
+import { isAr as isArLocal } from './i18n.js';
 import { goldSignals } from './bwgold.js';
+import { computeSK } from './wolfsk.js';
 import { sessionCVD, avwap, idxAtOrAfter, detectFlow, cvdDivergence, gateAbs } from './flow.js';
 const TH = {
   dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cu: '#00ffe0', cd: '#ff3d1f', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
@@ -155,6 +157,7 @@ export class Chart {
       for (const s of this.bw) { if (s.i < i0 - 1 || s.i > i1 + 1) continue; const b = c[s.i], x = this.xOf(s.i), up = s.dir === 'bull', y = up ? this.ymap(b.l) + 22 : this.ymap(b.h) - 22; g.fillStyle = up ? '#1fbf75' : '#e5484d'; g.strokeStyle = '#ffd34a'; g.lineWidth = 1.5; g.beginPath(); g.roundRect(x - 15, y - 9, 30, 18, 5); g.fill(); g.stroke(); g.fillStyle = '#fff'; g.font = 'bold 10px system-ui'; g.fillText((up ? 'B ' : 'S ') + s.score, x, y + 3.5); }
       g.restore();
     }
+    if (app.state.ind.wsk && !app.replay) this.drawSK(g, c, th, i0, i1);
     if (app.state.ind.vp && app.vp && !app.replay) { const V = app.vp, mw = this.plotW * 0.26; g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); for (let i = 0; i < V.rows; i++) { const y1 = this.ymap(V.lo + (i + 1) * V.step), y0 = this.ymap(V.lo + i * V.step); const w = V.v[i] / V.max * mw; g.fillStyle = i >= V.a && i <= V.b ? 'rgba(88,166,255,.38)' : 'rgba(150,160,180,.22)'; if (i === V.pocI) g.fillStyle = 'rgba(240,185,11,.6)'; g.fillRect(this.plotW - w, y1 + .5, w, Math.max(1, y0 - y1 - 1)); }
       const ln = (p, col, lab, dash) => { const y = Math.round(this.ymap(p)) + .5; g.strokeStyle = col; g.lineWidth = 1; g.setLineDash(dash); g.beginPath(); g.moveTo(this.plotW - mw - 40, y); g.lineTo(this.plotW, y); g.stroke(); g.setLineDash([]); g.fillStyle = col; g.font = '10px system-ui'; g.textAlign = 'left'; g.fillText(lab + ' ' + fmtP(p, dec), this.plotW - mw - 40, y - 3); };
       ln(V.poc, '#f0b90b', 'POC', []); ln(V.vah, '#58a6ff', 'VAH', [4, 3]); ln(V.val, '#58a6ff', 'VAL', [4, 3]); g.fillStyle = th.text; g.font = '9px system-ui'; g.textAlign = 'right'; g.fillText('VP ' + V.label + ' · approx', this.plotW - 4, this.H - 36); g.restore(); }
@@ -193,6 +196,37 @@ export class Chart {
       const x = this.xOf(a.i); const v = av.v[a.i]; if (isFinite(v)) { g.fillStyle = a.col; g.beginPath(); g.arc(x, this.ymap(v), 3.5, 0, 7); g.fill(); }
       const lastV = av.v[c.length - 1]; if (isFinite(lastV)) this.label(a.name + ' ' + fmtP(lastV, this.dec), this.plotW - 100, this.ymap(lastV) - 6, a.col);
     }
+  }
+  drawSK(g, c, th, i0, i1) {
+    const app = this.app, k = app.state.sk ||= { htf: 'H4', e1: true, e2: true, max: 4 }, tf = app.tfMs(), sym = app.state.symbol, gold = /PAXG|XAU/.test(sym), lc = c[c.length - 1];
+    const key = c.length + ':' + lc.t + ':' + k.htf + sym + app.state.tf + (Date.now() > lc.t + tf ? 1 : 0);
+    if (this.skK !== key) { this.skK = key; app.wskRes = this.sk = (tf <= 1800e3 && 1800e3 % tf === 0) ? computeSK(c, tf, { hp: k.htf === 'H2' ? 7200e3 : 14400e3, stopFix: gold ? 2.0 : 0 }, Date.now()) : { err: 'tf' }; }
+    const R = this.sk; g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip();
+    const ar = isArLocal(); const msg = !R ? '' : R.err === 'tf' ? (ar ? 'Wolf SK: محتاج شارت 30 دقيقة أو أقل' : 'Wolf SK needs a 30m or lower chart') : R.err ? (ar ? 'Wolf SK: داتا مش كفاية (اسحب الشارت لورا)' : 'Wolf SK: not enough data (scroll back)') : '';
+    if (msg) { g.fillStyle = th.text; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText(msg, 8, this.H - 50); g.restore(); return; }
+    const X = t => this.xOf(this.idxOfT(t)), Y = p => this.ymap(p), now = this.plotW;
+    const live = R.seqs.filter(q => q.status === 'FORMING' || q.status === 'ACTIVE' || q.status === 'E2'), rest = R.seqs.filter(q => !live.includes(q)), show = live.slice(-k.max).concat(rest.slice(-Math.max(0, k.max - live.length)));
+    const pt = (p, txt, col, above) => { const x = X(p.t), y = Y(p.p); g.fillStyle = col; g.strokeStyle = '#000'; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 3.5, 0, 7); g.fill(); g.stroke(); g.font = 'bold 11px system-ui'; g.textAlign = 'center'; g.fillStyle = col; g.fillText(txt, x, y + (above ? -8 : 15)); };
+    const stCol = { FORMING: '#ffd34a', ACTIVE: '#4c8dff', E2: '#b061ff', INVALID: '#888', EXPIRED: '#888', DONE: '#888' }, stAr = { FORMING: 'بيتكوّن', ACTIVE: 'نشط', E2: 'دخول E2', INVALID: 'ملغي', EXPIRED: 'انتهى', DONE: 'خلص' };
+    for (const S of show) {
+      const dead = !(S.status === 'FORMING' || S.status === 'ACTIVE' || S.status === 'E2'), al = dead ? 0.45 : 1, up = S.d > 0, endT = S.endT || null, xe = endT ? Math.min(now, X(endT)) : now, x0 = X(S.m0t);
+      if (xe < 0 && X(S.a.t) < 0) continue; g.globalAlpha = al; const col = up ? '#ffd34a' : '#ff9f43';
+      if (k.e1 && (S.status === 'FORMING' || S.fills.some(f => f.mode === 'E1'))) { const z1 = S.a.p - 0.5 * (S.a.p - S.o.p), z2 = S.a.p - 0.667 * (S.a.p - S.o.p), xr = S.aBreakT ? X(S.aBreakT) : xe; if (k.e1) { g.fillStyle = up ? 'rgba(255,211,74,.16)' : 'rgba(255,159,67,.16)'; g.fillRect(x0, Math.min(Y(z1), Y(z2)), Math.max(2, xr - x0), Math.abs(Y(z2) - Y(z1))); g.font = '9px system-ui'; g.textAlign = 'left'; g.fillStyle = col; g.fillText('E1 0.5-0.667', Math.max(4, x0) + 2, (Y(z1) + Y(z2)) / 2 + 3); } }
+      g.lineWidth = 1.6; this.seg(X(S.o.t), S.o.p, X(S.a.t), S.a.p, col, []); if (S.b) this.seg(X(S.a.t), S.a.p, X(S.b.t), S.b.p, col, [4, 3]); if (S.b && (S.cc || S.cp)) { const C = S.cc || S.cp; this.seg(X(S.b.t), S.b.p, X(C.t), C.p, col, [4, 3]); }
+      pt(S.o, '0', col, !up); pt(S.a, 'A', col, up); if (S.b) pt(S.b, 'B', col, !up); if (S.cc) pt(S.cc, 'C', col, up); else if (S.cp) pt(S.cp, 'C?', col, up);
+      // 0 invalidation line and status badge
+      this.seg(x0, S.o.p, xe, S.o.p, 'rgba(229,72,77,.6)', [2, 4]); g.font = '9px system-ui'; g.textAlign = 'left'; g.fillStyle = 'rgba(229,72,77,.9)'; g.fillText(ar ? 'إلغاء (0)' : 'invalid below 0', Math.max(4, x0 + 2), Y(S.o.p) + (up ? 10 : -3));
+      const bx = Math.max(4, Math.min(this.plotW - 120, X(S.a.t) + 6)), by = Y(S.a.p) + (up ? -22 : 24), t = 'SK ' + (up ? '▲' : '▼') + ' ' + (ar ? stAr[S.status] : S.status);
+      g.font = 'bold 10px system-ui'; const w = g.measureText(t).width + 10; g.fillStyle = stCol[S.status]; g.beginPath(); g.roundRect(bx, by - 10, w, 15, 4); g.fill(); g.fillStyle = '#000'; g.textAlign = 'left'; g.fillText(t, bx + 5, by + 1);
+      if (S.b && k.e2 && (S.cc)) { const cp = S.cc.p, b = S.b.p, z1 = cp - 0.5 * (cp - b), z2 = cp - 0.667 * (cp - b), xs = X(S.cc.t); g.fillStyle = 'rgba(176,97,255,.16)'; g.fillRect(xs, Math.min(Y(z1), Y(z2)), Math.max(2, xe - xs), Math.abs(Y(z2) - Y(z1))); g.fillStyle = '#b061ff'; g.font = '9px system-ui'; g.fillText('E2 0.5-0.667', Math.max(4, xs) + 2, (Y(z1) + Y(z2)) / 2 + 3); }
+      if (S.b && S.status !== 'INVALID') { const ty = [[S.b.p + S.d * 1.618 * Math.abs(S.a.p - S.o.p), '161.8%'], [S.b.p + S.d * 2 * Math.abs(S.a.p - S.o.p), '200%']]; for (const [p, tx] of ty) { this.seg(X(S.a.t), p, xe, p, '#ff9f43', [6, 3]); g.fillStyle = '#ff9f43'; g.font = '9px system-ui'; g.textAlign = 'right'; g.fillText('TP ' + tx + ' ' + p.toFixed(2), xe - 3, Y(p) - 3); } }
+      for (const q of S.pend) { if (!(k.e1 && S.status === 'FORMING') && !(k.e2 && S.status === 'E2')) continue; const xs = S.status === 'E2' ? X(S.cc.t) : x0; this.seg(xs, q.pr, now, q.pr, up ? '#ffd34a' : '#ff9f43', [3, 3]); g.fillStyle = up ? '#ffd34a' : '#ff9f43'; g.font = '9px system-ui'; g.textAlign = 'right'; g.fillText((S.status === 'E2' ? 'E2 ' : 'E1 ') + q.f + (up ? ' BUY' : ' SELL') + ' · SL ' + (up ? '-' : '+') + q.sd.toFixed(2), now - 3, Y(q.pr) - 3); }
+      for (const f of S.fills) { if ((f.mode === 'E1' && !k.e1) || (f.mode === 'E2' && !k.e2)) continue; const x = X(f.t), xo = Math.min(now, X(f.tEnd)), y = Y(f.pr); g.globalAlpha = 1; this.seg(x, f.sl, xo, f.sl, '#e5484d', [3, 3]); this.seg(x, f.t3, xo, f.t3, '#1fbf75', [3, 3]); this.seg(x, f.pr, xo, f.pr, up ? '#ffd34a' : '#ff9f43', []);
+        g.fillStyle = f.d === undefined && !up ? '#e5484d' : (up ? '#1fbf75' : '#e5484d'); g.beginPath(); if (up) { g.moveTo(x, y - 2); g.lineTo(x - 6, y + 9); g.lineTo(x + 6, y + 9); } else { g.moveTo(x, y + 2); g.lineTo(x - 6, y - 9); g.lineTo(x + 6, y - 9); } g.closePath(); g.fill(); g.font = 'bold 9px system-ui'; g.textAlign = 'center'; g.fillStyle = th.text; g.fillText((up ? 'BUY ' : 'SELL ') + f.mode + ' ' + f.f, x, y + (up ? 21 : -14)); g.fillStyle = f.out === 'SL' ? '#e5484d' : f.out === 'T3R' ? '#1fbf75' : th.text; g.fillText(f.out === 'SL' ? 'SL -1R' : f.out === 'T3R' ? 'TP +3R' : f.out === 'OPEN' ? 'open' : f.r.toFixed(1) + 'R', xo, Y(f.out === 'SL' ? f.sl : f.t3) + (f.out === 'SL' ? (up ? 11 : -4) : (up ? -4 : 11))); }
+      g.globalAlpha = 1;
+    }
+    const L = live[live.length - 1]; g.font = 'bold 11px system-ui'; g.textAlign = 'left'; g.fillStyle = th.text; g.fillText('Wolf SK ' + k.htf + '/M30 · ' + (L ? (L.d > 0 ? '▲ ' : '▼ ') + (ar ? stAr[L.status] : L.status) : (ar ? 'مفيش تسلسل شغال' : 'no live sequence')) + (ar ? ' · بقواعد، مفيش ميزة مثبتة' : ' · rule-based, no proven edge'), 8, this.H - 50);
+    g.restore();
   }
   label(txt, x, y, col) { // collision-avoiding label
     const g = this.ctx; g.font = '10px system-ui'; const w = g.measureText(txt).width + 4;
