@@ -18,7 +18,7 @@
     <select id="sym" aria-label="Symbol"></select>
     <div id="tfs" role="group" aria-label="Timeframe"></div>
     <select id="ctype" aria-label="Chart type"><option value="candles">Candles</option><option value="footprint">Footprint</option></select>
-    <button id="bBm" class="btn">Bookmap</button><button id="bPlan" class="btn">Plan</button>
+    <button id="bBm" class="btn">Bookmap</button><button id="bSt" class="btn">Stats</button><button id="bPlan" class="btn">Plan</button>
     <button id="bInd" class="btn">Indicators</button>
     <button id="bRep" class="btn">Replay</button>
     <button id="bWs" class="btn">Workspace</button>
@@ -48,6 +48,7 @@
     </aside>
   </div>
 </div>
+<div id="ss" hidden><div class="bmtop"><b id="ssT">Signal stats</b><button class="btn" id="ssX">Back</button><button class="btn" id="ssRef">&#8635;</button></div><div class="bmtop"><label class="chk"><input type="checkbox" id="ssHtf"> <span id="ssHtfL">HTF trend</span></label><select id="ssSess"><option value="all">All sessions</option><option value="london">London</option><option value="ny">New York</option><option value="lny">London + NY</option></select></div><div id="ssBody"></div></div>
 <div id="bm" hidden><div class="bmtop"><select id="bmSym"></select><select id="bmSrc"><option value="bn">Binance</option><option value="okx">OKX</option></select><button class="btn" id="bmX">Back</button></div><div class="bmtop"><span class="bmgrp"><button class="btn" data-tf="1000">1s</button><button class="btn" data-tf="5000">5s</button><button class="btn" data-tf="60000">1m</button></span><span class="bmgrp"><button class="btn" id="bmZm">&minus;</button><button class="btn" id="bmZp">+</button><button class="btn" id="bmHome">&#8635; live</button></span></div><div class="bmtop"><span class="bmgrp"><button class="btn" data-rp="0.001">&plusmn;0.1%</button><button class="btn" data-rp="0.0025">&plusmn;0.25%</button><button class="btn" data-rp="0.005">&plusmn;0.5%</button><button class="btn" data-rp="0.01">&plusmn;1%</button></span></div><div class="bmtop"><span class="bmgrp"><button class="btn" data-tg="tr">Trades</button><button class="btn" data-tg="ev">Events</button><button class="btn" data-tg="lv">VWAP/POC</button></span></div><div id="bmWrap"><canvas id="bmCv"></canvas></div><div id="bmChips"></div><div id="bmKey"></div><div id="bmLbl"></div><div id="bmRead"></div><div id="bmStat"></div><div id="bmHint" class="bmnote"></div></div>
 <div id="sheet" hidden><div class="card"><div class="card-h"><b id="sheetT"></b><button class="btn" id="sheetX">Close</button></div><div id="sheetB"></div></div></div>
 <div id="toasts" aria-live="polite"></div>
