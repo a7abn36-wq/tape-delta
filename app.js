@@ -148,9 +148,9 @@ class App {
     try { const t = await fetchTrades(this.src, this.state.symbol, 40); if (gen !== this.gen) return; const ids = new Set(this.tape.map(x => x.id)); this.tape = this.tape.concat(t.filter(x => !ids.has(x.id))).sort((a, b) => b.t - a.t).slice(0, 40); this.renderTape(); } catch {}
     const last = this.candles[this.candles.length - 1]; if (last) this.ensureTicks(last.t);
   }
-  async loadMore() {
-    if (this.loadingMore || this.replay || !this.candles.length || this.candles.length > 6000) return; this.loadingMore = true; const gen = this.gen;
-    try { const k = await fetchKlines(this.src, this.state.symbol, this.state.tf, 700, this.candles[0].t - 1); if (gen !== this.gen || !k.length) return; this.candles = k.concat(this.candles); this.chart.view.right += k.length; this.chart.cache = {}; this.checkData(); this.recomputeICT(true); this.chart.invalidate(); } catch {} finally { this.loadingMore = false; }
+  async loadMore(force) {
+    if (this.loadingMore || (this.replay && !force) || !this.candles.length || this.candles.length > 6000) return 0; this.loadingMore = true; const gen = this.gen; let added = 0;
+    try { const k = await fetchKlines(this.src, this.state.symbol, this.state.tf, 700, this.candles[0].t - 1); if (gen !== this.gen || !k.length) return 0; added = k.length; this.candles = k.concat(this.candles); this.chart.view.right += k.length; if (this.replay) { const r = this.replay; r.idx += k.length; if (r.saved) r.saved.right += k.length; $('#rpSlider').max = this.candles.length - 1; this.replayUpdate(); } this.chart.cache = {}; this.checkData(); this.recomputeICT(true); this.chart.invalidate(); } catch {} finally { this.loadingMore = false; } return added;
   }
   async poll() {
     const gen = this.gen, src = this.src; if (!src) return; const sym = this.state.symbol;
@@ -669,6 +669,16 @@ class App {
     if (this.replay || this.candles.length < 80) return; const n = this.candles.length; this.replay = { idx: n - 60, playing: false, saved: this.chart.snapshot(), t: null, cur: null, step: 0 };
     $('#replaybar').hidden = false; $('#rpMode').value = '0'; const sl = $('#rpSlider'); sl.min = 50; sl.max = n - 1; sl.value = this.replay.idx; this.chart.cache = {}; this.chart.view.right = this.replay.idx + 6; this.replayUpdate(); $('#bRep').classList.add('on');
   }
+  async rpGoto(ts, back) { // jump the replay start: load older history if needed (up to ~6000 candles), then cut the chart there
+    if (!this.replay) this.startReplay(); const r = this.replay; if (!r) return; this.replayPause(); const msg = $('#rpMsg'); msg.textContent = isAr() ? 'بحمّل تاريخ أقدم...' : 'Loading older history...';
+    const need = () => back ? this.candles.length < back + 60 : this.candles[0].t > ts;
+    let guard = 0; while (need() && this.candles.length <= 6000 && guard++ < 12) { const n = await this.loadMore(true); if (!n) break; }
+    let i = back ? Math.max(50, this.candles.length - back) : this.candles.findIndex(c => c.t >= ts); const hit = back ? true : this.candles[0].t <= ts;
+    if (i < 50) i = 50; if (i < 0) i = this.candles.length - 60;
+    r.idx = Math.min(i, this.candles.length - 1); if (r.step > 0) { r.cur = this.candles[r.idx].t; this.ensureTicks(r.cur); } this.chart.view.right = r.idx + 6; this.replayUpdate();
+    const ar = isAr(), left = this.candles.length - 1 - r.idx;
+    msg.textContent = (hit ? '' : (ar ? 'التاريخ أقدم من المتاح. بدأت من أقدم شمعة (' : 'Date older than available data. Started at the oldest candle (') + new Date(this.candles[r.idx].t).toLocaleString([], { hour12: false }) + (hit ? '' : ')')) + ' · ' + (ar ? 'شموع قدامك: ' : 'candles ahead: ') + left;
+  }
   partialCandle(i, cur) {
     const c = this.candles[i]; const e = this.ticks.get(c.t); if (!e) return null; let p = null, h = c.o, l = c.o, v = 0, bv = 0, n = 0, last = c.o;
     for (const t of e.arr) { if (t[4] > cur) break; n++; v += t[1]; if (t[2]) bv += t[1]; if (t[0] > h) h = t[0]; if (t[0] < l) l = t[0]; last = t[0]; }
@@ -723,6 +733,7 @@ class App {
     $('#bRep').onclick = () => this.replay ? this.exitReplay() : this.startReplay();
     $('#rpPlay').onclick = () => this.replayPlay(); $('#rpStep').onclick = () => { this.replayPause(); this.replayStep(); }; $('#rpExit').onclick = () => this.exitReplay();
     $('#rpMode').onchange = e => this.replayMode(+e.target.value); $('#rpBook').onclick = () => this.replayBookJump();
+    $('#rpGo').onclick = () => { const v = $('#rpDate').value; if (!v) return; const t = new Date(v).getTime(); if (isFinite(t)) this.rpGoto(t, 0); }; $('#rpBack').onclick = () => this.rpGoto(0, 1000);
     $('#rpSlider').oninput = e => { this.replayPause(); this.replay.idx = +e.target.value; if (this.replay.step > 0) { this.replay.cur = this.candles[this.replay.idx].t; this.ensureTicks(this.replay.cur); } this.chart.view.right = this.replay.idx + 6; this.replayUpdate(); };
     $('#rpSpeed').onchange = () => { if (this.replay?.playing) { this.replayPause(); this.replayPlay(); } };
     const tzb = $('#bTz'); tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; tzb.onclick = () => { this.state.tz = this.state.tz === 'UTC' ? 'local' : 'UTC'; tzb.textContent = this.state.tz === 'UTC' ? 'UTC' : 'Local'; this.save(); this.chart.invalidate(); };

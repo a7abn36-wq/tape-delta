@@ -157,7 +157,7 @@ export class Chart {
       for (const s of this.bw) { if (s.i < i0 - 1 || s.i > i1 + 1) continue; const b = c[s.i], x = this.xOf(s.i), up = s.dir === 'bull', y = up ? this.ymap(b.l) + 22 : this.ymap(b.h) - 22; g.fillStyle = up ? '#1fbf75' : '#e5484d'; g.strokeStyle = '#ffd34a'; g.lineWidth = 1.5; g.beginPath(); g.roundRect(x - 15, y - 9, 30, 18, 5); g.fill(); g.stroke(); g.fillStyle = '#fff'; g.font = 'bold 10px system-ui'; g.fillText((up ? 'B ' : 'S ') + s.score, x, y + 3.5); }
       g.restore();
     }
-    if (app.state.ind.wsk && !app.replay) this.drawSK(g, c, th, i0, i1);
+    if (app.state.ind.wsk) this.drawSK(g, c, th, i0, i1);
     if (app.state.ind.vp && app.vp && !app.replay) { const V = app.vp, mw = this.plotW * 0.26; g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); for (let i = 0; i < V.rows; i++) { const y1 = this.ymap(V.lo + (i + 1) * V.step), y0 = this.ymap(V.lo + i * V.step); const w = V.v[i] / V.max * mw; g.fillStyle = i >= V.a && i <= V.b ? 'rgba(88,166,255,.38)' : 'rgba(150,160,180,.22)'; if (i === V.pocI) g.fillStyle = 'rgba(240,185,11,.6)'; g.fillRect(this.plotW - w, y1 + .5, w, Math.max(1, y0 - y1 - 1)); }
       const ln = (p, col, lab, dash) => { const y = Math.round(this.ymap(p)) + .5; g.strokeStyle = col; g.lineWidth = 1; g.setLineDash(dash); g.beginPath(); g.moveTo(this.plotW - mw - 40, y); g.lineTo(this.plotW, y); g.stroke(); g.setLineDash([]); g.fillStyle = col; g.font = '10px system-ui'; g.textAlign = 'left'; g.fillText(lab + ' ' + fmtP(p, dec), this.plotW - mw - 40, y - 3); };
       ln(V.poc, '#f0b90b', 'POC', []); ln(V.vah, '#58a6ff', 'VAH', [4, 3]); ln(V.val, '#58a6ff', 'VAL', [4, 3]); g.fillStyle = th.text; g.font = '9px system-ui'; g.textAlign = 'right'; g.fillText('VP ' + V.label + ' · approx', this.plotW - 4, this.H - 36); g.restore(); }
@@ -200,7 +200,7 @@ export class Chart {
   drawSK(g, c, th, i0, i1) {
     const app = this.app, k = app.state.sk ||= { htf: 'H4', e1: true, e2: true, max: 4 }, tf = app.tfMs(), sym = app.state.symbol, gold = /PAXG|XAU/.test(sym), lc = c[c.length - 1];
     const key = c.length + ':' + lc.t + ':' + k.htf + sym + app.state.tf + (Date.now() > lc.t + tf ? 1 : 0);
-    if (this.skK !== key) { this.skK = key; app.wskRes = this.sk = (tf <= 1800e3 && 1800e3 % tf === 0) ? computeSK(c, tf, { hp: k.htf === 'H2' ? 7200e3 : 14400e3, stopFix: gold ? 2.0 : 0 }, Date.now()) : { err: 'tf' }; }
+    if (this.skK !== key) { this.skK = key; app.wskRes = this.sk = (tf <= 1800e3 && 1800e3 % tf === 0) ? computeSK(c, tf, { hp: k.htf === 'H2' ? 7200e3 : 14400e3, stopFix: gold ? 2.0 : 0 }, app.replay ? (app.replay.cur != null ? lc.t : lc.t + tf) : Date.now()) : { err: 'tf' }; }
     const R = this.sk; g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip();
     const ar = isArLocal(); const msg = !R ? '' : R.err === 'tf' ? (ar ? 'Wolf SK: محتاج شارت 30 دقيقة أو أقل' : 'Wolf SK needs a 30m or lower chart') : R.err ? (ar ? 'Wolf SK: داتا مش كفاية (اسحب الشارت لورا)' : 'Wolf SK: not enough data (scroll back)') : '';
     if (msg) { g.fillStyle = th.text; g.font = '11px system-ui'; g.textAlign = 'left'; g.fillText(msg, 8, this.H - 50); g.restore(); return; }
