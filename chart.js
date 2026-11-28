@@ -2,6 +2,7 @@ import { ema, rsi, vwap, vwapBands } from './ict.js';
 import { ibor } from './ibor.js';
 import * as DR from './draw.js';
 import { absorption, deltaDiv } from './flow2.js';
+import { goldSignals } from './bwgold.js';
 import { sessionCVD, avwap, idxAtOrAfter, detectFlow, cvdDivergence, gateAbs } from './flow.js';
 const TH = {
   dark: { bg: '#0b0e14', panel: '#10151e', grid: '#1a2130', text: '#8b97ad', ax: '#c5cee0', up: '#26a69a', dn: '#ef5350', cu: '#00ffe0', cd: '#ff3d1f', cross: '#5d6b85', gold: '#e6b84a', blue: '#4c8dff' },
@@ -145,6 +146,13 @@ export class Chart {
       g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); g.textAlign = 'center'; this.f2hits = [];
       if (app.state.ind.absorb) for (const s of this.f2a) { if (s.i < i0 - 1 || s.i > i1 + 1) continue; const b = c[s.i], x = this.xOf(s.i), up = s.dir === 'bull', y = up ? this.ymap(b.l) + 14 : this.ymap(b.h) - 14; g.fillStyle = '#b061ff'; g.strokeStyle = '#fff'; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 7, 0, 7); g.fill(); g.stroke(); g.fillStyle = '#fff'; g.font = 'bold 9px system-ui'; g.fillText('A', x, y + 3); this.f2hits.push({ x, y, k: 'abs', s }); }
       if (app.state.ind.dDiv) for (const s of this.f2d) { if (s.i < i0 - 2 || s.i1 > i1 + 2) continue; const bear = s.type === 'bear', col = bear ? th.dn : th.up, x = this.xOf(s.i), y = bear ? this.ymap(s.p2) - 16 : this.ymap(s.p2) + 16, d = bear ? 1 : -1; this.seg(this.xOf(s.i1), s.p1, x, s.p2, col, [2, 3]); g.fillStyle = col; g.strokeStyle = '#fff'; g.lineWidth = 1; g.beginPath(); g.moveTo(x, y + 9 * d); g.lineTo(x - 8, y - 6 * d); g.lineTo(x + 8, y - 6 * d); g.closePath(); g.fill(); g.stroke(); this.f2hits.push({ x, y, k: 'dd', s }); }
+      g.restore();
+    }
+    if (app.state.ind.bwg && !app.replay && c.length > 120) { // Black Wolf Gold score >= 55, closed candles only
+      const lc = c[c.length - 1], key = c.length + ':' + lc.t + ':' + (Date.now() > lc.t + app.tfMs() ? 1 : 0) + ':' + app.state.symbol + app.state.tf;
+      if (this.bwK !== key) { this.bwK = key; this.bw = goldSignals(c, app.tfMs(), app.state.tf, 55).sig; }
+      g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); g.textAlign = 'center';
+      for (const s of this.bw) { if (s.i < i0 - 1 || s.i > i1 + 1) continue; const b = c[s.i], x = this.xOf(s.i), up = s.dir === 'bull', y = up ? this.ymap(b.l) + 22 : this.ymap(b.h) - 22; g.fillStyle = up ? '#1fbf75' : '#e5484d'; g.strokeStyle = '#ffd34a'; g.lineWidth = 1.5; g.beginPath(); g.roundRect(x - 15, y - 9, 30, 18, 5); g.fill(); g.stroke(); g.fillStyle = '#fff'; g.font = 'bold 10px system-ui'; g.fillText((up ? 'B ' : 'S ') + s.score, x, y + 3.5); }
       g.restore();
     }
     if (app.state.ind.vp && app.vp && !app.replay) { const V = app.vp, mw = this.plotW * 0.26; g.save(); g.beginPath(); g.rect(0, 0, this.plotW, this.H); g.clip(); for (let i = 0; i < V.rows; i++) { const y1 = this.ymap(V.lo + (i + 1) * V.step), y0 = this.ymap(V.lo + i * V.step); const w = V.v[i] / V.max * mw; g.fillStyle = i >= V.a && i <= V.b ? 'rgba(88,166,255,.38)' : 'rgba(150,160,180,.22)'; if (i === V.pocI) g.fillStyle = 'rgba(240,185,11,.6)'; g.fillRect(this.plotW - w, y1 + .5, w, Math.max(1, y0 - y1 - 1)); }

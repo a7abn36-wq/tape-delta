@@ -1,4 +1,5 @@
 import { compute, htfSeries, TYPES, MAXH, SPLIT, MIN_N, KS } from './stats.js';
+import { goldStats, W } from './bwgold.js';
 import { TFS } from './data.js';
 import { isAr } from './i18n.js';
 const $ = s => document.querySelector(s);
@@ -33,15 +34,19 @@ export class SignalStats {
     this.busy = true; body.innerHTML = `<div class="note">${ar ? 'بيحمّل التاريخ من Binance...' : 'Loading history from Binance...'}</div>`;
     try {
       const D = await this.data(sym, tf); const useH = this.htfOn && D.htf; $('#ssHtfL').textContent = D.htfTf ? (ar ? `ترند ${D.htfTf}: EMA50 (الاتجاه بس)` : `${D.htfTf} trend: EMA50 (trade with it only)`) : (ar ? 'فلتر الترند مش متاح على الفريم ده' : 'Trend filter not available on this timeframe'); $('#ssHtf').disabled = !D.htfTf;
-      const t0 = performance.now(); const R = compute(D.c, useH ? D.htf : null, { sess: this.sess }); this.render(R, D, performance.now() - t0, useH);
+      const t0 = performance.now(); const R = compute(D.c, useH ? D.htf : null, { sess: this.sess }); let G = null; try { G = goldStats(D.c, tf, TFS[tf]); } catch (e) { } this.render(R, D, performance.now() - t0, useH, G);
     } catch (e) { body.innerHTML = `<div class="note">${ar ? 'فشل التحميل: ' : 'Load failed: '}${e.message}</div>`; }
     this.busy = false;
   }
-  render(R, D, ms, useH) {
+  render(R, D, ms, useH, G) {
     const ar = isAr(), L = i => i[ar ? 1 : 0]; const nt = R.n;
     const chip = { few: [ar ? 'عينة صغيرة' : 'too few', 'few'], none: [ar ? 'مفيش ميزة' : 'NO EDGE', 'none'], maybe: [ar ? 'ممكن ميزة (مش إثبات)' : 'possible edge (not proof)', 'maybe'] };
     let h = `<div class="bmnote">${ar ? 'بيانات Binance Spot الحقيقية' : 'Real Binance Spot candles'}: ${nt} ${ar ? 'شمعة' : 'candles'}, ${day(R.tStart)} → ${day(R.tEnd)}. ${ar ? 'الأقدم 60% لاختيار الستوب، والأحدث 40% (من ' : 'Older 60% picks the stop, newest 40% (from '}${day(R.tCut)}${ar ? ') نتيجة مش اتستخدمت في الاختيار.' : ') is held-out and is the only result judged.'}</div>`;
     h += `<div class="ssfilters">${ar ? 'الفلاتر الحالية: ' : 'Filters now: '}<b>${useH ? (ar ? 'ترند ' + D.htfTf : D.htfTf + ' trend') : (ar ? 'من غير ترند' : 'no trend filter')}</b> · <b>${this.sess === 'all' ? (ar ? 'كل الجلسات' : 'all sessions') : ({london:'London',ny:'New York',lny:'London + NY'})[this.sess]}</b></div>`;
+    if (G) { const t = G.test, a = G.train, c = chip[G.verdict]; h += `<div class="ssc" style="border-color:#e6b84a88"><div class="ssh"><b>Black Wolf Gold ${ar ? '(سكور من 100)' : '(score /100)'}</b><span class="ssv ${c[1]}">${c[0]}</span></div>
+      <div>${ar ? 'الأحدث (غير مستخدم)' : 'Held-out'}: <b>n=${t.w + t.l + t.t}</b> · ${ar ? 'وصل +1R قبل -1R' : 'reached +1R before -1R'}: <b>${pc(t.win)}</b> ${t.w + t.l ? `(${ar ? 'فاصل 95%' : '95% CI'} ${pc(G.ci[0])}-${pc(G.ci[1])}, ${t.w}/${t.w + t.l})` : ''} · ${ar ? 'متوسط R' : 'avg R'}: <b>${rr(t.avgR)}</b></div>
+      <div class="bmnote">${ar ? 'دخول عشوائي بنفس القواعد' : 'Random entries, same rule'}: ${pc(G.base)} · ${ar ? 'الأقدم' : 'Older'}: n=${a.n}, ${pc(a.win)}, ${rr(a.avgR)} · ${ar ? 'الحد الأدنى للسكور المختار' : 'chosen min score'} ${G.T}${G.picked ? '' : ' (default, train n<20)'} · ${ar ? 'ستوب' : 'stop'} ${G.k}×ATR</div>
+      <div class="bmnote">${ar ? `الأوزان ثابتة من قبل الاختبار (مش متظبطة): sweep+reclaim ${W.sweep}، absorption ${W.abs}، AVWAP ${W.avwap}، جلسة لندن/نيويورك ${W.sess} (بدون أخبار حقيقية: PROXY)، ترند فريم أعلى EMA50 ${W.trend}، تقلب معقول ${W.vol}. الحد الأدنى بيتختار من 40/55/70 على الأقدم 60% بس. الفلاتر فوق مش بتنطبق عليه.` : `Weights fixed before testing (not tuned): sweep+reclaim ${W.sweep}, absorption ${W.abs}, AVWAP bounce ${W.avwap}, London/NY open window ${W.sess} (no real news calendar: PROXY), higher-TF EMA50 trend ${W.trend}, sane volatility ${W.vol}. Min score picked from 40/55/70 on the older 60% only. Filters above do not apply to this card.`}</div></div>`; }
     for (const o of R.out) {
       const t = o.test, a = o.train, c = chip[o.verdict];
       h += `<div class="ssc"><div class="ssh"><b>${L(o.name)}</b><span class="ssv ${c[1]}">${c[0]}</span></div>

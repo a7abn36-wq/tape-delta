@@ -30,7 +30,7 @@ export function sim(c, atr, i, dir, k) {
   if (i + MAXH > c.length - 1) return null; // still open: not resolved yet, excluded
   const r = (L ? c[end].c - e : e - c[end].c) / risk; return { r, o: 't' };
 }
-function agg(rs) { let w = 0, l = 0, t = 0, sr = 0; for (const x of rs) { if (!x) continue; if (x.o === 'w') w++; else if (x.o === 'l') l++; else t++; sr += x.r; } const n = w + l + t; return { n, w, l, t, win: w + l ? w / (w + l) : NaN, avgR: n ? sr / n : NaN }; }
+export function agg(rs) { let w = 0, l = 0, t = 0, sr = 0; for (const x of rs) { if (!x) continue; if (x.o === 'w') w++; else if (x.o === 'l') l++; else t++; sr += x.r; } const n = w + l + t; return { n, w, l, t, win: w + l ? w / (w + l) : NaN, avgR: n ? sr / n : NaN }; }
 // opts: { htf: {t,close,ema} array or null, sess: 'all'|'london'|'ny'|'lny' }
 export function compute(c, htf, opts = {}) {
   const n = c.length, atr = wilderATR(c), cut = Math.floor(n * SPLIT), tf = c[1].t - c[0].t; const sig = signalsOf(c);
